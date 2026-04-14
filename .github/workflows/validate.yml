@@ -32,6 +32,3 @@ jobs:
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
-          # Remove this 'ignore' key once brand images have been added
-          # https://developers.home-assistant.io/docs/creating_integration_file_structure#local-brand-images-for-custom-integrations
-          ignore: brands
