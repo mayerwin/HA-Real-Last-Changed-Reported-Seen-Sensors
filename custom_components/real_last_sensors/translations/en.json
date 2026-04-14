@@ -41,5 +41,16 @@
             "no_pattern": "Enter a pattern.",
             "no_matches": "No new matches found."
         }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Options",
+                "description": "Configure options for this entry.\n\nWhen **Exclude from recorder** is enabled, a YAML package file is written to `config/packages/` and existing history for these sensors is purged. Requires a Home Assistant restart to take effect — see the integration README for setup instructions.",
+                "data": {
+                    "exclude_from_recorder": "Exclude from recorder (recommended)"
+                }
+            }
+        }
     }
 }

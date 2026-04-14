@@ -11,6 +11,7 @@ from .const import (
     CONF_SOURCE_ENTITIES,
     CONF_DEVICE_ID,
     CONF_SENSOR_TYPES,
+    CONF_EXCLUDE_FROM_RECORDER,
     SENSOR_TYPE_CHANGED,
     SENSOR_TYPE_SEEN,
     SENSOR_TYPES,
@@ -41,6 +42,10 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         self._matched = []
         self._sensor_types = []
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        return RealLastSensorsOptionsFlow(config_entry)
 
     async def async_step_user(self, _=None):
         return self.async_show_menu(step_id="user", menu_options=["single", "pattern"])
@@ -246,3 +251,25 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
         title = self._get_device_name(dev_id) if dev_id else ents[0]
         return self.async_create_entry(title=title, data=data)
+
+
+class RealLastSensorsOptionsFlow(config_entries.OptionsFlow):
+    """Options flow — shown when the user clicks Configure on an integration entry."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_exclude = self._entry.options.get(CONF_EXCLUDE_FROM_RECORDER, True)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_EXCLUDE_FROM_RECORDER, default=current_exclude
+                ): selector.BooleanSelector(),
+            }),
+        )
