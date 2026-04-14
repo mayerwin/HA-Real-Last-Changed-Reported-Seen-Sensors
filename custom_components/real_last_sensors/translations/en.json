@@ -1,0 +1,45 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Add Real Last Sensor",
+                "menu_options": {
+                    "single": "Single entity",
+                    "pattern": "Pattern matching"
+                }
+            },
+            "single": {
+                "title": "Add Single Sensor",
+                "description": "Track when an entity last changed state or was last seen.",
+                "data": {
+                    "source_entity": "Entity to track",
+                    "sensor_types": "Sensor type(s) to create",
+                    "name": "Name (optional)"
+                }
+            },
+            "pattern": {
+                "title": "Pattern Matching",
+                "description": "Create sensors for all entities matching a pattern.",
+                "data": {
+                    "pattern": "Pattern (matches entity ID)",
+                    "regex": "Use regex",
+                    "sensor_types": "Sensor type(s) to create"
+                }
+            },
+            "confirm": {
+                "title": "Confirm Selection",
+                "description": "Found {count} new entities to track.\nSensor types: {types}\n\n{entities}\n\nPress Submit to create sensors."
+            }
+        },
+        "abort": {
+            "already_configured": "Already configured with the same sensor type(s).",
+            "cannot_track_self": "Cannot track a sensor created by this integration.",
+            "added_to_device": "Added {count} sensor(s) to existing device entry.",
+            "bulk_created": "Created {created} new entry/entries. Added {added} to existing devices."
+        },
+        "error": {
+            "no_pattern": "Enter a pattern.",
+            "no_matches": "No new matches found."
+        }
+    }
+}
