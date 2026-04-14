@@ -1,13 +1,14 @@
 from __future__ import annotations
 from datetime import datetime
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_state_report_event,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util, slugify
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
 from .const import (
@@ -18,6 +19,36 @@ from .const import (
     SENSOR_TYPE_CHANGED,
     SENSOR_TYPE_SEEN,
 )
+
+TYPE_LABELS = {
+    SENSOR_TYPE_CHANGED: "Last Changed",
+    SENSOR_TYPE_SEEN: "Last Seen",
+}
+TYPE_SUFFIXES = {
+    SENSOR_TYPE_CHANGED: "last_changed",
+    SENSOR_TYPE_SEEN: "last_seen",
+}
+TYPE_ICONS = {
+    SENSOR_TYPE_CHANGED: "mdi:clock-check-outline",
+    SENSOR_TYPE_SEEN: "mdi:eye-check-outline",
+}
+
+
+def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
+    """Get the source entity's own name (without device prefix).
+
+    Looks up the entity registry for original_name, falling back to
+    deriving a friendly name from the entity_id suffix.
+    """
+    ent_reg = er.async_get(hass)
+    entry = ent_reg.async_get(entity_id)
+    if entry:
+        # name = user override, original_name = integration-provided name
+        name = entry.name or entry.original_name
+        if name:
+            return name
+    # Fallback: derive from entity_id
+    return entity_id.split(".")[-1].replace("_", " ").title()
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
@@ -32,20 +63,23 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                 device_info = dr.DeviceInfo(identifiers=device.identifiers)
 
     entities = []
-    name = entry.data.get(CONF_NAME)
+    custom_name = entry.data.get(CONF_NAME)
     if CONF_SOURCE_ENTITIES in entry.data:
         entities = entry.data[CONF_SOURCE_ENTITIES]
     elif CONF_SOURCE_ENTITY in entry.data:
         entities = [entry.data[CONF_SOURCE_ENTITY]]
 
     sensor_types = entry.data.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
-    single_name = name if len(entities) == 1 else None
+    single_custom_name = custom_name if len(entities) == 1 else None
 
     sensors = []
     for entity_id in entities:
+        source_name = single_custom_name or _source_entity_name(hass, entity_id)
         for sensor_type in sensor_types:
             sensors.append(
-                RealLastSensor(entity_id, sensor_type, single_name, device_info)
+                RealLastSensor(
+                    entity_id, sensor_type, source_name, device_info,
+                )
             )
     async_add_entities(sensors)
 
@@ -55,33 +89,26 @@ class RealLastSensor(RestoreEntity, SensorEntity):
 
     _attr_should_poll = False
     _attr_device_class = "timestamp"
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self,
         source_entity: str,
         sensor_type: str,
-        name: str | None = None,
+        source_name: str,
         device_info: dr.DeviceInfo | None = None,
     ):
         self._source = source_entity
         self._sensor_type = sensor_type
         self._attr_device_info = device_info
 
-        friendly = source_entity.split(".")[-1].replace("_", " ").title()
-        type_label = "Real Last Changed" if sensor_type == SENSOR_TYPE_CHANGED else "Last Seen"
-        type_suffix = "real_last_changed" if sensor_type == SENSOR_TYPE_CHANGED else "last_seen"
+        type_label = TYPE_LABELS[sensor_type]
+        type_suffix = TYPE_SUFFIXES[sensor_type]
 
-        if name:
-            self._attr_name = f"{name} {type_label}"
-            self._attr_unique_id = f"{slugify(name)}_{type_suffix}"
-        else:
-            self._attr_name = f"{friendly} {type_label}"
-            self._attr_unique_id = f"{source_entity.replace('.', '_')}_{type_suffix}"
-
-        if sensor_type == SENSOR_TYPE_CHANGED:
-            self._attr_icon = "mdi:clock-check-outline"
-        else:
-            self._attr_icon = "mdi:eye-check-outline"
+        self._attr_name = f"{source_name} {type_label}"
+        self._attr_unique_id = f"{source_entity.replace('.', '_')}_{type_suffix}"
+        self._attr_icon = TYPE_ICONS[sensor_type]
 
         self._attr_native_value = None
         self._previous_state = None
