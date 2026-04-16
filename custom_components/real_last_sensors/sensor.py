@@ -37,29 +37,32 @@ TYPE_ICONS = {
 def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
     """Get the source entity's own name (without device prefix).
 
-    Since our sensors use has_entity_name=True, HA will prepend the device
-    name automatically. We must therefore return only the entity-specific
-    part. Older source integrations that don't use has_entity_name store
-    the full "<device> <entity>" string in original_name — strip it.
+    Our sensors use has_entity_name=True, so HA prepends the device name
+    automatically. Always try to strip the device prefix from the source
+    name — some integrations bake the device name into original_name
+    even when has_entity_name is True, which would otherwise double up.
     """
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
+
+    device_name = None
+    if entry and entry.device_id:
+        device = dr.async_get(hass).async_get(entry.device_id)
+        if device:
+            device_name = device.name_by_user or device.name
+
     if entry:
-        if entry.name:
-            return entry.name
-        original = entry.original_name
-        if original:
-            if entry.has_entity_name or not entry.device_id:
-                return original
-            device = dr.async_get(hass).async_get(entry.device_id)
-            if device:
-                device_name = device.name_by_user or device.name
-                if device_name and original.lower().startswith(device_name.lower()):
-                    stripped = original[len(device_name):].lstrip(" -_")
-                    if stripped:
-                        return stripped
-            return original
-    return entity_id.split(".")[-1].replace("_", " ").title()
+        name = entry.name or entry.original_name
+    else:
+        name = None
+    if not name:
+        name = entity_id.split(".")[-1].replace("_", " ").title()
+
+    if device_name and name.lower().startswith(device_name.lower()):
+        stripped = name[len(device_name):].lstrip(" -_")
+        if stripped:
+            return stripped
+    return name
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
