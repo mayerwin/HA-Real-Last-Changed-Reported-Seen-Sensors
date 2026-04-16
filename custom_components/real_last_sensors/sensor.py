@@ -9,7 +9,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.util import dt as dt_util, slugify
+from homeassistant.util import dt as dt_util
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
 from .const import (
     CONF_SOURCE_ENTITY,
@@ -37,17 +37,28 @@ TYPE_ICONS = {
 def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
     """Get the source entity's own name (without device prefix).
 
-    Looks up the entity registry for original_name, falling back to
-    deriving a friendly name from the entity_id suffix.
+    Since our sensors use has_entity_name=True, HA will prepend the device
+    name automatically. We must therefore return only the entity-specific
+    part. Older source integrations that don't use has_entity_name store
+    the full "<device> <entity>" string in original_name — strip it.
     """
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
     if entry:
-        # name = user override, original_name = integration-provided name
-        name = entry.name or entry.original_name
-        if name:
-            return name
-    # Fallback: derive from entity_id
+        if entry.name:
+            return entry.name
+        original = entry.original_name
+        if original:
+            if entry.has_entity_name or not entry.device_id:
+                return original
+            device = dr.async_get(hass).async_get(entry.device_id)
+            if device:
+                device_name = device.name_by_user or device.name
+                if device_name and original.lower().startswith(device_name.lower()):
+                    stripped = original[len(device_name):].lstrip(" -_")
+                    if stripped:
+                        return stripped
+            return original
     return entity_id.split(".")[-1].replace("_", " ").title()
 
 

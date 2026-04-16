@@ -17,6 +17,8 @@ from .const import (
     SENSOR_TYPES,
 )
 
+DEFAULT_SENSOR_TYPES = [SENSOR_TYPE_CHANGED, SENSOR_TYPE_SEEN]
+
 SENSOR_TYPE_LABELS = {
     SENSOR_TYPE_CHANGED: "Last Changed",
     SENSOR_TYPE_SEEN: "Last Seen",
@@ -52,7 +54,7 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_single(self, user_input=None):
         if user_input is not None:
-            sensor_types = user_input.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
+            sensor_types = user_input.get(CONF_SENSOR_TYPES, DEFAULT_SENSOR_TYPES)
             return await self._create_or_update(
                 user_input[CONF_SOURCE_ENTITY],
                 sensor_types,
@@ -63,7 +65,7 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="single",
             data_schema=vol.Schema({
                 vol.Required(CONF_SOURCE_ENTITY): selector.EntitySelector(),
-                vol.Required(CONF_SENSOR_TYPES, default=[SENSOR_TYPE_CHANGED]): SENSOR_TYPE_SELECTOR,
+                vol.Required(CONF_SENSOR_TYPES, default=DEFAULT_SENSOR_TYPES): SENSOR_TYPE_SELECTOR,
                 vol.Optional(CONF_NAME): str,
             }),
         )
@@ -76,36 +78,45 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "no_pattern" if not pattern else "no_matches"
             else:
                 self._matched = matched
-                self._sensor_types = user_input.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
-                return await self.async_step_confirm()
+                self._sensor_types = user_input.get(CONF_SENSOR_TYPES, DEFAULT_SENSOR_TYPES)
+                return await self.async_step_select()
 
         return self.async_show_form(
             step_id="pattern",
             data_schema=vol.Schema({
                 vol.Required("pattern"): str,
                 vol.Optional("regex", default=False): bool,
-                vol.Required(CONF_SENSOR_TYPES, default=[SENSOR_TYPE_CHANGED]): SENSOR_TYPE_SELECTOR,
+                vol.Required(CONF_SENSOR_TYPES, default=DEFAULT_SENSOR_TYPES): SENSOR_TYPE_SELECTOR,
             }),
             errors=errors,
         )
 
-    async def async_step_confirm(self, user_input=None):
+    async def async_step_select(self, user_input=None):
+        errors = {}
         if user_input is not None:
-            return await self._create_bulk(self._matched, self._sensor_types)
-
-        preview = "\n".join(f"- {e}" for e in self._matched[:30])
-        if len(self._matched) > 30:
-            preview += f"\n... and {len(self._matched) - 30} more"
+            chosen = user_input.get(CONF_SOURCE_ENTITIES, [])
+            if chosen:
+                return await self._create_bulk(chosen, self._sensor_types)
+            errors["base"] = "no_selection"
 
         types_label = ", ".join(SENSOR_TYPE_LABELS[t] for t in self._sensor_types)
         return self.async_show_form(
-            step_id="confirm",
-            data_schema=vol.Schema({}),
+            step_id="select",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_SOURCE_ENTITIES, default=list(self._matched)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        multiple=True,
+                        include_entities=list(self._matched),
+                    )
+                ),
+            }),
             description_placeholders={
                 "count": str(len(self._matched)),
-                "entities": preview,
                 "types": types_label,
             },
+            errors=errors,
         )
 
     def _match_entities(self, pattern: str, use_regex: bool) -> list[str]:
@@ -260,16 +271,68 @@ class RealLastSensorsOptionsFlow(config_entries.OptionsFlow):
         self._entry = config_entry
 
     async def async_step_init(self, user_input=None):
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
+        current_sources = self._get_current_sources()
         current_exclude = self._entry.options.get(CONF_EXCLUDE_FROM_RECORDER, True)
+
+        if user_input is not None:
+            kept = user_input.get(CONF_SOURCE_ENTITIES, [])
+            exclude = user_input.get(CONF_EXCLUDE_FROM_RECORDER, True)
+
+            if not kept:
+                self.hass.async_create_task(
+                    self.hass.config_entries.async_remove(self._entry.entry_id)
+                )
+                return self.async_abort(reason="entry_removed")
+
+            removed = [e for e in current_sources if e not in kept]
+            if removed:
+                await self._cleanup_registry(removed)
+
+            new_data = dict(self._entry.data)
+            new_data[CONF_SOURCE_ENTITIES] = kept
+            new_data.pop(CONF_SOURCE_ENTITY, None)
+
+            self.hass.config_entries.async_update_entry(
+                self._entry,
+                data=new_data,
+                options={CONF_EXCLUDE_FROM_RECORDER: exclude},
+            )
+            return self.async_abort(reason="options_updated")
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required(
+                    CONF_SOURCE_ENTITIES, default=current_sources
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        multiple=True,
+                        include_entities=current_sources,
+                    )
+                ),
+                vol.Required(
                     CONF_EXCLUDE_FROM_RECORDER, default=current_exclude
                 ): selector.BooleanSelector(),
             }),
         )
+
+    def _get_current_sources(self) -> list[str]:
+        data = self._entry.data
+        if CONF_SOURCE_ENTITIES in data:
+            return list(data[CONF_SOURCE_ENTITIES])
+        if CONF_SOURCE_ENTITY in data:
+            return [data[CONF_SOURCE_ENTITY]]
+        return []
+
+    async def _cleanup_registry(self, removed: list[str]) -> None:
+        """Remove registry entries for source entities no longer tracked."""
+        ent_reg = er.async_get(self.hass)
+        prefixes = tuple(f"{e.replace('.', '_')}_" for e in removed)
+        to_remove = [
+            reg.entity_id
+            for reg in list(ent_reg.entities.values())
+            if reg.config_entry_id == self._entry.entry_id
+            and reg.unique_id.startswith(prefixes)
+        ]
+        for eid in to_remove:
+            ent_reg.async_remove(eid)

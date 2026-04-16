@@ -26,9 +26,12 @@
                     "sensor_types": "Sensor type(s) to create"
                 }
             },
-            "confirm": {
-                "title": "Confirm Selection",
-                "description": "Found {count} new entities to track.\nSensor types: {types}\n\n{entities}\n\nPress Submit to create sensors."
+            "select": {
+                "title": "Review Matched Entities",
+                "description": "Found {count} entity/entities matching your pattern.\nSensor types: {types}\n\nUncheck any you don't want to track, then press Submit.",
+                "data": {
+                    "source_entities": "Entities to track"
+                }
             }
         },
         "abort": {
@@ -39,18 +42,27 @@
         },
         "error": {
             "no_pattern": "Enter a pattern.",
-            "no_matches": "No new matches found."
+            "no_matches": "No new matches found.",
+            "no_selection": "Select at least one entity."
         }
     },
     "options": {
         "step": {
             "init": {
                 "title": "Options",
-                "description": "Configure options for this entry.\n\nWhen **Exclude from recorder** is enabled, a YAML package file is written to `config/packages/` and existing history for these sensors is purged. Requires a Home Assistant restart to take effect — see the integration README for setup instructions.",
+                "description": "Uncheck any tracked entity to stop tracking it (its sensors will be removed). Removing all entities deletes this entry.\n\nWhen **Exclude from recorder** is enabled, a YAML package file is written to `config/packages/` and existing history for these sensors is purged. Requires a Home Assistant restart to take effect — see the integration README for setup instructions.",
                 "data": {
+                    "source_entities": "Tracked entities",
                     "exclude_from_recorder": "Exclude from recorder (recommended)"
                 }
             }
+        },
+        "abort": {
+            "options_updated": "Options updated.",
+            "entry_removed": "Entry removed — no entities left to track."
+        },
+        "error": {
+            "no_selection": "Select at least one entity."
         }
     }
 }
