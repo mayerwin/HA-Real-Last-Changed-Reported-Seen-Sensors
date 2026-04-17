@@ -155,16 +155,13 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         device = dr.async_get(self.hass).async_get(device_id)
         return device.name_by_user or device.name or device_id if device else device_id
 
-    def _is_duplicated(self, entity_id: str, sensor_types: list[str]) -> bool:
+    def _existing_types_for_entity(self, entity_id: str) -> set[str]:
+        """Return the sensor types already tracked for this entity across all entries."""
+        types: set[str] = set()
         for entry in self.hass.config_entries.async_entries(DOMAIN):
-            if sorted(entry.data.get(CONF_SENSOR_TYPES, [])) != sorted(sensor_types):
-                continue
-            tracked = entry.data.get(CONF_SOURCE_ENTITIES, [])
-            if CONF_SOURCE_ENTITY in entry.data:
-                tracked = list(tracked) + [entry.data[CONF_SOURCE_ENTITY]]
-            if entity_id in tracked:
-                return True
-        return False
+            if entity_id in self._get_entities_from_entry(entry):
+                types |= set(entry.data.get(CONF_SENSOR_TYPES, []))
+        return types
 
     async def _create_or_update(
         self, entity_id: str, sensor_types: list[str], name: str | None = None
@@ -172,14 +169,16 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._is_own_entity(entity_id):
             return self.async_abort(reason="cannot_track_self")
 
-        if self._is_duplicated(entity_id, sensor_types):
+        existing = self._existing_types_for_entity(entity_id)
+        remaining = [t for t in sensor_types if t not in existing]
+        if not remaining:
             return self.async_abort(reason="already_configured")
 
         entry = er.async_get(self.hass).async_get(entity_id)
         device_id = entry.device_id if entry else None
 
-        if device_id and (existing := self._get_device_entry(device_id, sensor_types)):
-            await self._update_entry(existing, [entity_id])
+        if device_id and (existing_entry := self._get_device_entry(device_id, remaining)):
+            await self._update_entry(existing_entry, [entity_id])
             return self.async_abort(
                 reason="added_to_device",
                 description_placeholders={"count": "1"},
@@ -192,12 +191,12 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data = {
             CONF_SOURCE_ENTITIES: [entity_id],
             CONF_DEVICE_ID: device_id,
-            CONF_SENSOR_TYPES: sensor_types,
+            CONF_SENSOR_TYPES: remaining,
         }
         if name:
             data[CONF_NAME] = name
 
-        types_label = " + ".join(SENSOR_TYPE_LABELS[t] for t in sensor_types)
+        types_label = " + ".join(SENSOR_TYPE_LABELS[t] for t in remaining)
         return self.async_create_entry(
             title=name or f"{self._get_device_name(device_id) or entity_id} ({types_label})",
             data=data,
@@ -211,28 +210,31 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.hass.config_entries.async_reload(entry.entry_id)
 
     async def _create_bulk(self, entities: list[str], sensor_types: list[str]):
-        ent_reg, by_device = er.async_get(self.hass), {}
+        ent_reg = er.async_get(self.hass)
+        groups: dict[tuple[str | None, tuple[str, ...]], list[str]] = {}
         for eid in entities:
+            existing = self._existing_types_for_entity(eid)
+            remaining = tuple(t for t in sensor_types if t not in existing)
+            if not remaining:
+                continue
             entry = ent_reg.async_get(eid)
-            by_device.setdefault(entry.device_id if entry else None, []).append(eid)
+            dev_id = entry.device_id if entry else None
+            groups.setdefault((dev_id, remaining), []).append(eid)
 
         created, added = 0, 0
-        for dev_id, eids in by_device.items():
-            valid_eids = [e for e in eids if not self._is_duplicated(e, sensor_types)]
-            if not valid_eids:
-                continue
-
-            if dev_id and (existing := self._get_device_entry(dev_id, sensor_types)):
-                current_ents = self._get_entities_from_entry(existing)
-                to_add = [e for e in valid_eids if e not in current_ents]
+        for (dev_id, remaining), eids in groups.items():
+            remaining_list = list(remaining)
+            if dev_id and (existing_entry := self._get_device_entry(dev_id, remaining_list)):
+                current_ents = self._get_entities_from_entry(existing_entry)
+                to_add = [e for e in eids if e not in current_ents]
                 if to_add:
-                    await self._update_entry(existing, to_add)
+                    await self._update_entry(existing_entry, to_add)
                     added += len(to_add)
             else:
                 data = {
-                    CONF_SOURCE_ENTITIES: valid_eids,
+                    CONF_SOURCE_ENTITIES: eids,
                     CONF_DEVICE_ID: dev_id,
-                    CONF_SENSOR_TYPES: sensor_types,
+                    CONF_SENSOR_TYPES: remaining_list,
                 }
                 self.hass.async_create_task(
                     self.hass.config_entries.flow.async_init(
