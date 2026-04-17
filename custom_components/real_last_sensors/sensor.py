@@ -101,14 +101,6 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     single_custom_name = custom_name if len(entities) == 1 else None
     has_custom_name = bool(single_custom_name)
 
-    ent_reg = er.async_get(hass)
-    # Purge all registry entries for this config entry so HA cannot reuse stale
-    # entity_ids from earlier renames. Entities below re-register with an
-    # explicit, deterministic entity_id derived from the source entity.
-    for reg in list(ent_reg.entities.values()):
-        if reg.platform == DOMAIN and reg.config_entry_id == entry.entry_id:
-            ent_reg.async_remove(reg.entity_id)
-
     sensors = []
     for entity_id in entities:
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
