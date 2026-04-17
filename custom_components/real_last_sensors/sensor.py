@@ -39,12 +39,13 @@ TYPE_ICONS = {
 
 
 def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
-    """Derive the source entity's own name (without device prefix).
+    """Derive the source entity's own name from its entity_id slug.
 
-    Prefers the user's explicit name override, then the entity_id slug
-    (stable across display-name changes), then original_name as a last
-    resort. Using the slug as the default avoids carrying stale names
-    from upstream integrations into our sensor names.
+    Deliberately ignores the source's friendly-name override. The entity_id
+    is the user's latest explicit choice; carrying an old upstream name
+    override across would make our sensor say "Pluviometer Last Seen" even
+    after the source was renamed to yearly_rainfall. Users who want a
+    different label should use this integration's custom name option.
     """
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
@@ -55,23 +56,12 @@ def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
         if device:
             device_name = device.name_by_user or device.name
 
-    if entry and entry.name:
-        name = entry.name
-    else:
-        slug = entity_id.split(".", 1)[1]
-        if device_name:
-            device_slug = slugify(device_name)
-            if device_slug and slug.startswith(device_slug + "_"):
-                slug = slug[len(device_slug) + 1:]
-        name = slug.replace("_", " ").title() if slug else (
-            entry.original_name if entry and entry.original_name else entity_id
-        )
-
-    if device_name and name.lower().startswith(device_name.lower()):
-        stripped = name[len(device_name):].lstrip(" -_")
-        if stripped:
-            return stripped
-    return name
+    slug = entity_id.split(".", 1)[1]
+    if device_name:
+        device_slug = slugify(device_name)
+        if device_slug and slug.startswith(device_slug + "_"):
+            slug = slug[len(device_slug) + 1:]
+    return slug.replace("_", " ").title() if slug else entity_id
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
