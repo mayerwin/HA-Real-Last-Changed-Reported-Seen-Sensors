@@ -36,12 +36,12 @@ TYPE_ICONS = {
 
 
 def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
-    """Get the source entity's own name (without device prefix).
+    """Derive the source entity's own name (without device prefix).
 
-    Our sensors use has_entity_name=True, so HA prepends the device name
-    automatically. Always try to strip the device prefix from the source
-    name — some integrations bake the device name into original_name
-    even when has_entity_name is True, which would otherwise double up.
+    Prefers the user's explicit name override, then the entity_id slug
+    (stable across display-name changes), then original_name as a last
+    resort. Using the slug as the default avoids carrying stale names
+    from upstream integrations into our sensor names.
     """
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
@@ -52,12 +52,17 @@ def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
         if device:
             device_name = device.name_by_user or device.name
 
-    if entry:
-        name = entry.name or entry.original_name
+    if entry and entry.name:
+        name = entry.name
     else:
-        name = None
-    if not name:
-        name = entity_id.split(".")[-1].replace("_", " ").title()
+        slug = entity_id.split(".", 1)[1]
+        if device_name:
+            device_slug = slugify(device_name)
+            if device_slug and slug.startswith(device_slug + "_"):
+                slug = slug[len(device_slug) + 1:]
+        name = slug.replace("_", " ").title() if slug else (
+            entry.original_name if entry and entry.original_name else entity_id
+        )
 
     if device_name and name.lower().startswith(device_name.lower()):
         stripped = name[len(device_name):].lstrip(" -_")
