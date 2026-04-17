@@ -92,7 +92,6 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     sensors = []
     for entity_id in entities:
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
-        device_info = None if has_custom_name else source_device_info
         for sensor_type in sensor_types:
             type_suffix = TYPE_SUFFIXES[sensor_type]
             type_label = TYPE_LABELS[sensor_type]
@@ -102,10 +101,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
             existing_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
             if existing_id:
                 existing = ent_reg.async_get(existing_id)
-                if existing and (
-                    existing.original_name != expected_name
-                    or existing.name is not None
-                ):
+                if existing and existing.original_name != expected_name:
                     ent_reg.async_remove(existing_id)
 
             sensors.append(
@@ -113,7 +109,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                     entity_id,
                     sensor_type,
                     source_name,
-                    device_info,
+                    source_device_info,
                     has_custom_name=has_custom_name,
                 )
             )
@@ -162,13 +158,6 @@ class RealLastSensor(RestoreEntity, SensorEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
-
-        ent_reg = er.async_get(self.hass)
-        reg_entry = ent_reg.async_get(self.entity_id)
-        if reg_entry and reg_entry.original_name != self._attr_name:
-            ent_reg.async_update_entity(
-                self.entity_id, original_name=self._attr_name
-            )
 
         if (state := await self.async_get_last_state()) is not None:
             self._attr_native_value = dt_util.parse_datetime(state.state)
