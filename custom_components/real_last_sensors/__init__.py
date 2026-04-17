@@ -73,9 +73,9 @@ def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
     for reg in list(ent_reg.entities.values()):
         if reg.platform != DOMAIN:
             continue
-        if reg.unique_id not in expected:
+        if reg.config_entry_id is None or reg.unique_id not in expected:
             _LOGGER.info(
-                "Removing ghost entity %s (unique_id=%s) — no matching config entry",
+                "Removing ghost entity %s (unique_id=%s)",
                 reg.entity_id,
                 reg.unique_id,
             )
