@@ -1,9 +1,10 @@
 from __future__ import annotations
 import os
 import logging
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_entity_registry_updated_event
 from homeassistant.helpers.start import async_at_start
 from .const import (
     DOMAIN,
@@ -36,7 +37,7 @@ recorder:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration."""
-    _LOGGER.info(
+    _LOGGER.warning(
         "Setting up entry %s (title=%r, version=%s, data=%s)",
         entry.entry_id,
         entry.title,
@@ -44,19 +45,85 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dict(entry.data),
     )
 
-    # Run ghost cleanup on every setup. Earlier versions gated this by a
-    # hass.data flag which persisted across integration reloads and so
-    # skipped cleanup on reload-without-restart.
     _cleanup_ghost_entities(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    _register_source_rename_tracker(hass, entry)
 
     async def _on_ha_start(_hass: HomeAssistant) -> None:
         await _sync_recorder_package(hass, entry)
 
     async_at_start(hass, _on_ha_start)
     return True
+
+
+def _entry_sources(entry: ConfigEntry) -> list[str]:
+    sources = list(entry.data.get(CONF_SOURCE_ENTITIES, []))
+    if not sources and CONF_SOURCE_ENTITY in entry.data:
+        sources = [entry.data[CONF_SOURCE_ENTITY]]
+    return sources
+
+
+def _register_source_rename_tracker(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Follow entity_id renames on the source entities and update the entry.
+
+    Without this, renaming the source in HA's UI leaves our entry.data
+    pointing at a now-nonexistent entity_id, which is how stale unique_ids
+    and entity_ids ended up surviving every cleanup pass.
+    """
+    source_ids = _entry_sources(entry)
+    if not source_ids:
+        return
+
+    @callback
+    def _on_source_registry_update(event) -> None:
+        data = event.data
+        if data.get("action") != "update":
+            return
+        changes = data.get("changes") or {}
+        if "entity_id" not in changes:
+            return
+        old_id = changes["entity_id"]
+        new_id = data.get("entity_id")
+        if not old_id or not new_id or old_id == new_id:
+            return
+
+        new_data = dict(entry.data)
+        changed = False
+        if CONF_SOURCE_ENTITIES in new_data and old_id in new_data[CONF_SOURCE_ENTITIES]:
+            new_data[CONF_SOURCE_ENTITIES] = [
+                new_id if e == old_id else e
+                for e in new_data[CONF_SOURCE_ENTITIES]
+            ]
+            changed = True
+        if (
+            CONF_SOURCE_ENTITY in new_data
+            and new_data.get(CONF_SOURCE_ENTITY) == old_id
+        ):
+            new_data[CONF_SOURCE_ENTITY] = new_id
+            changed = True
+
+        if changed:
+            _LOGGER.warning(
+                "Entry %s: source renamed %s -> %s; updating and reloading",
+                entry.entry_id,
+                old_id,
+                new_id,
+            )
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            hass.async_create_task(
+                hass.config_entries.async_reload(entry.entry_id)
+            )
+
+    entry.async_on_unload(
+        async_track_entity_registry_updated_event(
+            hass, source_ids, _on_source_registry_update
+        )
+    )
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -88,33 +155,41 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
-    """Delete registry entries left over from prior installs/renames.
+    """Delete registry rows that no live config entry expects.
 
-    A ghost is any entity under our platform whose unique_id is not
-    expected by any current config entry. This catches entries from
-    earlier schemes (e.g. name-slug-based unique_ids) or from entries
-    deleted without proper cleanup.
+    A row is considered a ghost if either:
+      * it has no config_entry_id (orphaned),
+      * its unique_id isn't among those currently expected by any config
+        entry, where the expected set is derived only from sources that
+        still exist in the entity registry. Sources that were renamed in
+        the upstream integration no longer exist, so any unique_id that
+        was derived from them is treated as stale and removed.
     """
     ent_reg = er.async_get(hass)
     expected: set[str] = set()
     for entry in hass.config_entries.async_entries(DOMAIN):
-        source_entities = list(entry.data.get(CONF_SOURCE_ENTITIES, []))
-        if not source_entities and CONF_SOURCE_ENTITY in entry.data:
-            source_entities = [entry.data[CONF_SOURCE_ENTITY]]
         types = entry.data.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
-        for src in source_entities:
+        for src in _entry_sources(entry):
+            if ent_reg.async_get(src) is None:
+                _LOGGER.warning(
+                    "Entry %s: source %s is not in the entity registry "
+                    "(renamed or removed upstream). Its rows will be wiped.",
+                    entry.entry_id,
+                    src,
+                )
+                continue
             for t in types:
                 expected.add(f"{src.replace('.', '_')}_{TYPE_SUFFIXES[t]}")
 
     our_rows = [r for r in ent_reg.entities.values() if r.platform == DOMAIN]
-    _LOGGER.info(
+    _LOGGER.warning(
         "Ghost cleanup: %d registry rows under %s; expected unique_ids=%s",
         len(our_rows),
         DOMAIN,
         sorted(expected),
     )
     for reg in our_rows:
-        _LOGGER.info(
+        _LOGGER.warning(
             "  row entity_id=%s unique_id=%s config_entry_id=%s name=%r original_name=%r",
             reg.entity_id,
             reg.unique_id,
@@ -125,7 +200,7 @@ def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
 
     for reg in list(our_rows):
         if reg.config_entry_id is None or reg.unique_id not in expected:
-            _LOGGER.info(
+            _LOGGER.warning(
                 "Removing ghost entity %s (unique_id=%s, config_entry_id=%s)",
                 reg.entity_id,
                 reg.unique_id,

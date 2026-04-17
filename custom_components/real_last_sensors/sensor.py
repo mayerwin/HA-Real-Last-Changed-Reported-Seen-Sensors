@@ -105,7 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     has_custom_name = bool(single_custom_name)
 
     ent_reg = er.async_get(hass)
-    _LOGGER.info(
+    _LOGGER.warning(
         "sensor.async_setup_entry: entry=%s sources=%s types=%s has_custom_name=%s device_info=%s",
         entry.entry_id,
         entities,
@@ -114,11 +114,22 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
         source_device_info,
     )
 
-    sensors = []
+    live_entities = []
     for entity_id in entities:
+        if ent_reg.async_get(entity_id) is None:
+            _LOGGER.warning(
+                "  skipping %s: not in entity registry (renamed or removed upstream); "
+                "update this integration entry to point at the new entity",
+                entity_id,
+            )
+            continue
+        live_entities.append(entity_id)
+
+    sensors = []
+    for entity_id in live_entities:
         source_reg_entry = ent_reg.async_get(entity_id)
         source_state = hass.states.get(entity_id)
-        _LOGGER.info(
+        _LOGGER.warning(
             "  source %s: registry=%s state=%s",
             entity_id,
             "present" if source_reg_entry else "MISSING",
@@ -137,14 +148,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                 desired_object_id = f"{source_object_id}_{type_suffix}"
             desired_entity_id = f"sensor.{desired_object_id}"
 
-            # Detect registry rows that older versions left with a stale
-            # entity_id or stale display name. If the stored entity_id no
-            # longer matches the slug we'd generate today, drop the row so the
-            # entity re-registers fresh below (explicit self.entity_id and
-            # _attr_name in RealLastSensor). HA otherwise reuses the stale row
-            # by unique_id match and ignores our suggested id.
             existing = ent_reg.async_get_entity_id("sensor", DOMAIN, unique_id)
-            _LOGGER.info(
+            _LOGGER.warning(
                 "  %s: unique_id=%s desired=%s existing=%s",
                 sensor_type,
                 unique_id,
@@ -152,7 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                 existing,
             )
             if existing and existing != desired_entity_id:
-                _LOGGER.info(
+                _LOGGER.warning(
                     "  wiping stale row %s (desired %s)",
                     existing,
                     desired_entity_id,
