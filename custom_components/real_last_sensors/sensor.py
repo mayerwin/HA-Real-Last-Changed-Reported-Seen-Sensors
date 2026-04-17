@@ -101,6 +101,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     single_custom_name = custom_name if len(entities) == 1 else None
     has_custom_name = bool(single_custom_name)
 
+    ent_reg = er.async_get(hass)
     sensors = []
     for entity_id in entities:
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
@@ -109,10 +110,22 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
             type_suffix = TYPE_SUFFIXES[sensor_type]
             type_label = TYPE_LABELS[sensor_type]
 
+            unique_id = f"{entity_id.replace('.', '_')}_{type_suffix}"
             if has_custom_name:
                 desired_object_id = slugify(f"{source_name} {type_label}")
             else:
                 desired_object_id = f"{source_object_id}_{type_suffix}"
+            desired_entity_id = f"sensor.{desired_object_id}"
+
+            # Detect registry rows that older versions left with a stale
+            # entity_id or stale display name. If the stored entity_id no
+            # longer matches the slug we'd generate today, drop the row so the
+            # entity re-registers fresh below (explicit self.entity_id and
+            # _attr_name in RealLastSensor). HA otherwise reuses the stale row
+            # by unique_id match and ignores our suggested id.
+            existing = ent_reg.async_get_entity_id("sensor", DOMAIN, unique_id)
+            if existing and existing != desired_entity_id:
+                ent_reg.async_remove(existing)
 
             sensors.append(
                 RealLastSensor(

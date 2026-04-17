@@ -207,9 +207,14 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if name:
             data[CONF_NAME] = name
 
+        # Keep the custom name off the config entry title — HA renders entry
+        # tiles in a device-like card, and reusing the custom name there makes
+        # it look like a second device. The custom name lives on the sensor's
+        # friendly name and entity_id instead.
         types_label = " + ".join(SENSOR_TYPE_LABELS[t] for t in effective_types)
+        device_label = self._get_device_name(device_id) or entity_id
         return self.async_create_entry(
-            title=name or f"{self._get_device_name(device_id) or entity_id} ({types_label})",
+            title=f"{device_label} ({types_label})",
             data=data,
         )
 
