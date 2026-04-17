@@ -42,8 +42,9 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
     def __init__(self):
-        self._matched = []
-        self._sensor_types = []
+        self._matched: list[str] = []
+        self._selected: list[str] = []
+        self._sensor_types: list[str] = list(DEFAULT_SENSOR_TYPES)
 
     @staticmethod
     def async_get_options_flow(config_entry):
@@ -71,66 +72,99 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_pattern(self, user_input=None):
-        errors = {}
+        """Iterative pattern search.
+
+        One step that the user re-submits as many times as needed:
+          * type a pattern and submit to search (matches are added, auto-ticked)
+          * untick anything unwanted
+          * type another pattern and submit to add more matches
+          * leave pattern empty and submit to create sensors
+          * tick "Clear all matched" to wipe the accumulated list
+        """
+        errors: dict[str, str] = {}
+
         if user_input is not None:
             pattern = user_input.get("pattern", "").strip()
-            if not (matched := self._match_entities(pattern, user_input.get("regex", False))):
-                errors["base"] = "no_pattern" if not pattern else "no_matches"
+            use_regex = user_input.get("regex", False)
+            selected_now = list(user_input.get(CONF_SOURCE_ENTITIES, []) or [])
+            self._sensor_types = user_input.get(
+                CONF_SENSOR_TYPES, DEFAULT_SENSOR_TYPES
+            )
+
+            if user_input.get("clear_selection"):
+                self._matched = []
+                self._selected = []
+            elif pattern:
+                try:
+                    new_matches = self._match_entities(pattern, use_regex)
+                except re.error:
+                    errors["base"] = "bad_regex"
+                    new_matches = []
+
+                added = [e for e in new_matches if e not in self._matched]
+                self._matched.extend(added)
+                self._selected = list(dict.fromkeys(selected_now + added))
+
+                if not new_matches and "base" not in errors:
+                    errors["base"] = "no_matches"
             else:
-                self._matched = matched
-                self._sensor_types = user_input.get(CONF_SENSOR_TYPES, DEFAULT_SENSOR_TYPES)
-                return await self.async_step_select()
+                if not selected_now:
+                    errors["base"] = "no_selection"
+                else:
+                    return await self._create_bulk(
+                        selected_now, self._sensor_types
+                    )
+                # Preserve user unticks even on error re-render.
+                self._selected = selected_now
+
+        schema_dict: dict = {
+            vol.Optional("pattern", default=""): str,
+            vol.Optional("regex", default=False): bool,
+            vol.Required(
+                CONF_SENSOR_TYPES,
+                default=self._sensor_types or list(DEFAULT_SENSOR_TYPES),
+            ): SENSOR_TYPE_SELECTOR,
+        }
+        if self._matched:
+            schema_dict[
+                vol.Optional(
+                    CONF_SOURCE_ENTITIES, default=list(self._selected)
+                )
+            ] = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value=e, label=e)
+                        for e in self._matched
+                    ],
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            )
+            schema_dict[
+                vol.Optional("clear_selection", default=False)
+            ] = selector.BooleanSelector()
 
         return self.async_show_form(
             step_id="pattern",
-            data_schema=vol.Schema({
-                vol.Required("pattern"): str,
-                vol.Optional("regex", default=False): bool,
-                vol.Required(CONF_SENSOR_TYPES, default=DEFAULT_SENSOR_TYPES): SENSOR_TYPE_SELECTOR,
-            }),
+            data_schema=vol.Schema(schema_dict),
             errors=errors,
-        )
-
-    async def async_step_select(self, user_input=None):
-        errors = {}
-        if user_input is not None:
-            chosen = user_input.get(CONF_SOURCE_ENTITIES, [])
-            if chosen:
-                return await self._create_bulk(chosen, self._sensor_types)
-            errors["base"] = "no_selection"
-
-        types_label = ", ".join(SENSOR_TYPE_LABELS[t] for t in self._sensor_types)
-        return self.async_show_form(
-            step_id="select",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_SOURCE_ENTITIES, default=list(self._matched)
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        multiple=True,
-                        include_entities=list(self._matched),
-                    )
-                ),
-            }),
             description_placeholders={
                 "count": str(len(self._matched)),
-                "types": types_label,
+                "selected": str(len(self._selected)),
             },
-            errors=errors,
         )
 
     def _match_entities(self, pattern: str, use_regex: bool) -> list[str]:
         matched = []
+        compiled = re.compile(pattern, re.IGNORECASE) if use_regex else None
         for eid in self.hass.states.async_entity_ids():
             if self._is_own_entity(eid):
                 continue
-            try:
-                if use_regex and re.search(pattern, eid, re.IGNORECASE):
+            if compiled is not None:
+                if compiled.search(eid):
                     matched.append(eid)
-                elif not use_regex and pattern.lower() in eid.lower():
-                    matched.append(eid)
-            except re.error:
-                pass
+            elif pattern.lower() in eid.lower():
+                matched.append(eid)
         return sorted(matched)
 
     def _is_own_entity(self, eid: str) -> bool:

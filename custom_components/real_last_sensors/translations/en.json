@@ -19,18 +19,13 @@
             },
             "pattern": {
                 "title": "Pattern Matching",
-                "description": "Create sensors for all entities matching a pattern.",
+                "description": "Type a pattern and Submit to add matching entities to the list below. Repeat with more patterns to keep adding; untick anything you don't want. When you're done, leave the pattern empty and Submit to create the sensors.\n\nMatched so far: {count} \u00b7 selected: {selected}",
                 "data": {
-                    "pattern": "Pattern (matches entity ID)",
+                    "pattern": "Pattern (matches entity ID, leave empty to submit selection)",
                     "regex": "Use regex",
-                    "sensor_types": "Sensor type(s) to create"
-                }
-            },
-            "select": {
-                "title": "Review Matched Entities",
-                "description": "Found {count} entity/entities matching your pattern.\nSensor types: {types}\n\nUncheck any you don't want to track, then press Submit.",
-                "data": {
-                    "source_entities": "Entities to track"
+                    "sensor_types": "Sensor type(s) to create",
+                    "source_entities": "Matched entities",
+                    "clear_selection": "Clear all matched entities"
                 }
             }
         },
@@ -41,9 +36,9 @@
             "bulk_created": "Created {created} new entry/entries. Added {added} to existing devices."
         },
         "error": {
-            "no_pattern": "Enter a pattern.",
-            "no_matches": "No new matches found.",
-            "no_selection": "Select at least one entity."
+            "no_matches": "No matches found for that pattern.",
+            "no_selection": "Tick at least one entity, or enter a pattern to search.",
+            "bad_regex": "Invalid regex pattern."
         }
     },
     "options": {
