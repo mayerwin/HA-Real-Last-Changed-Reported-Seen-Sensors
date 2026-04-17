@@ -12,6 +12,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
 from .const import (
+    DOMAIN,
     CONF_SOURCE_ENTITY,
     CONF_SOURCE_ENTITIES,
     CONF_DEVICE_ID,
@@ -69,12 +70,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Set up sensors for a config entry."""
     device_id = entry.data.get(CONF_DEVICE_ID)
 
-    device_info = None
+    source_device_info = None
     if device_id:
         dev_reg = dr.async_get(hass)
         if device := dev_reg.async_get(device_id):
             if device.identifiers:
-                device_info = dr.DeviceInfo(identifiers=device.identifiers)
+                source_device_info = dr.DeviceInfo(identifiers=device.identifiers)
 
     entities = []
     custom_name = entry.data.get(CONF_NAME)
@@ -85,14 +86,35 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
 
     sensor_types = entry.data.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
     single_custom_name = custom_name if len(entities) == 1 else None
+    has_custom_name = bool(single_custom_name)
 
+    ent_reg = er.async_get(hass)
     sensors = []
     for entity_id in entities:
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
+        device_info = None if has_custom_name else source_device_info
         for sensor_type in sensor_types:
+            type_suffix = TYPE_SUFFIXES[sensor_type]
+            type_label = TYPE_LABELS[sensor_type]
+            expected_name = f"{source_name} {type_label}"
+            uid = f"{entity_id.replace('.', '_')}_{type_suffix}"
+
+            existing_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
+            if existing_id:
+                existing = ent_reg.async_get(existing_id)
+                if existing and (
+                    existing.original_name != expected_name
+                    or existing.name is not None
+                ):
+                    ent_reg.async_remove(existing_id)
+
             sensors.append(
                 RealLastSensor(
-                    entity_id, sensor_type, source_name, device_info,
+                    entity_id,
+                    sensor_type,
+                    source_name,
+                    device_info,
+                    has_custom_name=has_custom_name,
                 )
             )
     async_add_entities(sensors)
@@ -112,10 +134,13 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         sensor_type: str,
         source_name: str,
         device_info: dr.DeviceInfo | None = None,
+        has_custom_name: bool = False,
     ):
         self._source = source_entity
         self._sensor_type = sensor_type
         self._attr_device_info = device_info
+        if has_custom_name:
+            self._attr_has_entity_name = False
 
         type_label = TYPE_LABELS[sensor_type]
         type_suffix = TYPE_SUFFIXES[sensor_type]
