@@ -76,13 +76,19 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     device_id = entry.data.get(CONF_DEVICE_ID)
 
     source_device_info = None
-    source_device_name = None
     if device_id:
         dev_reg = dr.async_get(hass)
         if device := dev_reg.async_get(device_id):
-            source_device_name = device.name_by_user or device.name
-            if device.identifiers:
-                source_device_info = dr.DeviceInfo(identifiers=device.identifiers)
+            # Always merge with the source device. Identifiers + connections are
+            # what HA uses to match to an existing device — passing both ensures
+            # our entities attach to the source device rather than spawning a
+            # new virtual device, regardless of whether the upstream integration
+            # uses identifiers, connections, or both.
+            if device.identifiers or device.connections:
+                source_device_info = dr.DeviceInfo(
+                    identifiers=device.identifiers,
+                    connections=device.connections,
+                )
 
     entities = []
     custom_name = entry.data.get(CONF_NAME)
@@ -96,25 +102,25 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     has_custom_name = bool(single_custom_name)
 
     ent_reg = er.async_get(hass)
+    # Purge all registry entries for this config entry so HA cannot reuse stale
+    # entity_ids from earlier renames. Entities below re-register with an
+    # explicit, deterministic entity_id derived from the source entity.
+    for reg in list(ent_reg.entities.values()):
+        if reg.platform == DOMAIN and reg.config_entry_id == entry.entry_id:
+            ent_reg.async_remove(reg.entity_id)
+
     sensors = []
     for entity_id in entities:
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
+        source_object_id = entity_id.split(".", 1)[1]
         for sensor_type in sensor_types:
             type_suffix = TYPE_SUFFIXES[sensor_type]
             type_label = TYPE_LABELS[sensor_type]
-            expected_name = f"{source_name} {type_label}"
-            uid = f"{entity_id.replace('.', '_')}_{type_suffix}"
 
-            if has_custom_name or not source_device_name:
-                expected_slug = slugify(expected_name)
+            if has_custom_name:
+                desired_object_id = slugify(f"{source_name} {type_label}")
             else:
-                expected_slug = slugify(f"{source_device_name} {expected_name}")
-
-            existing_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
-            if existing_id:
-                current_slug = existing_id.split(".", 1)[1]
-                if current_slug != expected_slug:
-                    ent_reg.async_remove(existing_id)
+                desired_object_id = f"{source_object_id}_{type_suffix}"
 
             sensors.append(
                 RealLastSensor(
@@ -123,6 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                     source_name,
                     source_device_info,
                     has_custom_name=has_custom_name,
+                    desired_object_id=desired_object_id,
                 )
             )
     async_add_entities(sensors)
@@ -143,6 +150,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         source_name: str,
         device_info: dr.DeviceInfo | None = None,
         has_custom_name: bool = False,
+        desired_object_id: str | None = None,
     ):
         self._source = source_entity
         self._sensor_type = sensor_type
@@ -156,6 +164,11 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         self._attr_name = f"{source_name} {type_label}"
         self._attr_unique_id = f"{source_entity.replace('.', '_')}_{type_suffix}"
         self._attr_icon = TYPE_ICONS[sensor_type]
+
+        # Pin entity_id explicitly so HA doesn't fall back to a slug that
+        # embeds stale device or source names.
+        if desired_object_id:
+            self.entity_id = f"sensor.{desired_object_id}"
 
         self._attr_native_value = None
         self._previous_state = None

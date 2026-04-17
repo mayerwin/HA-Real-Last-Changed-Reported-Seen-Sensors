@@ -89,7 +89,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Clean up recorder package file when entry is deleted."""
+    """Clean up registry entries and recorder package file when entry is deleted.
+
+    Wiping registry entries here prevents HA from retaining orphans
+    (config_entry_id=None) that could later be re-associated and resurface as
+    stale entity_ids.
+    """
+    ent_reg = er.async_get(hass)
+    for reg in list(ent_reg.entities.values()):
+        if reg.platform == DOMAIN and reg.config_entry_id == entry.entry_id:
+            ent_reg.async_remove(reg.entity_id)
     await hass.async_add_executor_job(_delete_package_file, hass, entry.entry_id)
 
 
