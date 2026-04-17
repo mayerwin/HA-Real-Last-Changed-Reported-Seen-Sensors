@@ -30,10 +30,11 @@
             },
             "preview": {
                 "title": "Preview Matches",
-                "description": "Pattern \"{pattern}\" matched {count} new entity/entities. Untick any you don't want, then Submit to add them to your selection.",
+                "description": "Pattern \"{pattern}\" matched {count} new entity/entities. Untick any you don't want, then add them to your selection.",
                 "data": {
                     "to_add": "Entities to add"
-                }
+                },
+                "submit": "Add to selection"
             }
         },
         "abort": {
