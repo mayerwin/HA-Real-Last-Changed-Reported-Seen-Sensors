@@ -51,6 +51,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old config entries.
+
+    v1 -> v2: older releases generated entity_ids from upstream display names,
+    which could go stale after source renames. Wipe the registry entries once
+    so they get recreated with the new slug-based scheme; HA preserves future
+    user renames on its own.
+    """
+    if entry.version > 2:
+        return False
+
+    if entry.version < 2:
+        ent_reg = er.async_get(hass)
+        removed = 0
+        for reg in list(ent_reg.entities.values()):
+            if reg.platform == DOMAIN and reg.config_entry_id == entry.entry_id:
+                ent_reg.async_remove(reg.entity_id)
+                removed += 1
+        _LOGGER.info(
+            "Migrated entry %s to v2 (removed %d legacy entity registry rows)",
+            entry.entry_id,
+            removed,
+        )
+        hass.config_entries.async_update_entry(entry, version=2)
+
+    return True
+
+
 def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
     """Delete registry entries left over from prior installs/renames.
 

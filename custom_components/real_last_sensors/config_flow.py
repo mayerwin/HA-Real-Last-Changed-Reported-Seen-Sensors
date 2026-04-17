@@ -39,7 +39,7 @@ SENSOR_TYPE_SELECTOR = selector.SelectSelector(
 class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Real Last Sensors."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self):
         self._matched = []
