@@ -138,6 +138,13 @@ class RealLastSensor(RestoreEntity, SensorEntity):
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
 
+        ent_reg = er.async_get(self.hass)
+        reg_entry = ent_reg.async_get(self.entity_id)
+        if reg_entry and reg_entry.original_name != self._attr_name:
+            ent_reg.async_update_entity(
+                self.entity_id, original_name=self._attr_name
+            )
+
         if (state := await self.async_get_last_state()) is not None:
             self._attr_native_value = dt_util.parse_datetime(state.state)
             if self._sensor_type == SENSOR_TYPE_CHANGED:

@@ -5,9 +5,23 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.start import async_at_start
-from .const import DOMAIN, CONF_EXCLUDE_FROM_RECORDER
+from .const import (
+    DOMAIN,
+    CONF_EXCLUDE_FROM_RECORDER,
+    CONF_SOURCE_ENTITY,
+    CONF_SOURCE_ENTITIES,
+    CONF_SENSOR_TYPES,
+    SENSOR_TYPE_CHANGED,
+    SENSOR_TYPE_SEEN,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+TYPE_SUFFIXES = {
+    SENSOR_TYPE_CHANGED: "last_changed",
+    SENSOR_TYPE_SEEN: "last_seen",
+}
+_CLEANUP_FLAG = f"{DOMAIN}_cleanup_done"
 
 PACKAGES_SUBDIR = "packages"
 RECORDER_PACKAGE_FILENAME = "real_last_sensors_{entry_id}.yaml"
@@ -23,6 +37,10 @@ recorder:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration."""
+    if not hass.data.get(_CLEANUP_FLAG):
+        hass.data[_CLEANUP_FLAG] = True
+        _cleanup_ghost_entities(hass)
+
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -31,6 +49,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async_at_start(hass, _on_ha_start)
     return True
+
+
+def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
+    """Delete registry entries left over from prior installs/renames.
+
+    A ghost is any entity under our platform whose unique_id is not
+    expected by any current config entry. This catches entries from
+    earlier schemes (e.g. name-slug-based unique_ids) or from entries
+    deleted without proper cleanup.
+    """
+    ent_reg = er.async_get(hass)
+    expected: set[str] = set()
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        source_entities = list(entry.data.get(CONF_SOURCE_ENTITIES, []))
+        if not source_entities and CONF_SOURCE_ENTITY in entry.data:
+            source_entities = [entry.data[CONF_SOURCE_ENTITY]]
+        types = entry.data.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
+        for src in source_entities:
+            for t in types:
+                expected.add(f"{src.replace('.', '_')}_{TYPE_SUFFIXES[t]}")
+
+    for reg in list(ent_reg.entities.values()):
+        if reg.platform != DOMAIN:
+            continue
+        if reg.unique_id not in expected:
+            _LOGGER.info(
+                "Removing ghost entity %s (unique_id=%s) — no matching config entry",
+                reg.entity_id,
+                reg.unique_id,
+            )
+            ent_reg.async_remove(reg.entity_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
