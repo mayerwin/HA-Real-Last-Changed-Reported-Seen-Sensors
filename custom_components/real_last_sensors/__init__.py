@@ -21,7 +21,6 @@ TYPE_SUFFIXES = {
     SENSOR_TYPE_CHANGED: "last_changed",
     SENSOR_TYPE_SEEN: "last_seen",
 }
-_CLEANUP_FLAG = f"{DOMAIN}_cleanup_done"
 
 PACKAGES_SUBDIR = "packages"
 RECORDER_PACKAGE_FILENAME = "real_last_sensors_{entry_id}.yaml"
@@ -37,9 +36,18 @@ recorder:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration."""
-    if not hass.data.get(_CLEANUP_FLAG):
-        hass.data[_CLEANUP_FLAG] = True
-        _cleanup_ghost_entities(hass)
+    _LOGGER.info(
+        "Setting up entry %s (title=%r, version=%s, data=%s)",
+        entry.entry_id,
+        entry.title,
+        entry.version,
+        dict(entry.data),
+    )
+
+    # Run ghost cleanup on every setup. Earlier versions gated this by a
+    # hass.data flag which persisted across integration reloads and so
+    # skipped cleanup on reload-without-restart.
+    _cleanup_ghost_entities(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -98,14 +106,30 @@ def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
             for t in types:
                 expected.add(f"{src.replace('.', '_')}_{TYPE_SUFFIXES[t]}")
 
-    for reg in list(ent_reg.entities.values()):
-        if reg.platform != DOMAIN:
-            continue
+    our_rows = [r for r in ent_reg.entities.values() if r.platform == DOMAIN]
+    _LOGGER.info(
+        "Ghost cleanup: %d registry rows under %s; expected unique_ids=%s",
+        len(our_rows),
+        DOMAIN,
+        sorted(expected),
+    )
+    for reg in our_rows:
+        _LOGGER.info(
+            "  row entity_id=%s unique_id=%s config_entry_id=%s name=%r original_name=%r",
+            reg.entity_id,
+            reg.unique_id,
+            reg.config_entry_id,
+            reg.name,
+            reg.original_name,
+        )
+
+    for reg in list(our_rows):
         if reg.config_entry_id is None or reg.unique_id not in expected:
             _LOGGER.info(
-                "Removing ghost entity %s (unique_id=%s)",
+                "Removing ghost entity %s (unique_id=%s, config_entry_id=%s)",
                 reg.entity_id,
                 reg.unique_id,
+                reg.config_entry_id,
             )
             ent_reg.async_remove(reg.entity_id)
 

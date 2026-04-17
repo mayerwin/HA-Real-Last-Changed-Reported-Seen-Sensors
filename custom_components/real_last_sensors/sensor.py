@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from datetime import datetime
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
@@ -20,6 +21,8 @@ from .const import (
     SENSOR_TYPE_CHANGED,
     SENSOR_TYPE_SEEN,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 TYPE_LABELS = {
     SENSOR_TYPE_CHANGED: "Last Changed",
@@ -102,8 +105,25 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     has_custom_name = bool(single_custom_name)
 
     ent_reg = er.async_get(hass)
+    _LOGGER.info(
+        "sensor.async_setup_entry: entry=%s sources=%s types=%s has_custom_name=%s device_info=%s",
+        entry.entry_id,
+        entities,
+        sensor_types,
+        has_custom_name,
+        source_device_info,
+    )
+
     sensors = []
     for entity_id in entities:
+        source_reg_entry = ent_reg.async_get(entity_id)
+        source_state = hass.states.get(entity_id)
+        _LOGGER.info(
+            "  source %s: registry=%s state=%s",
+            entity_id,
+            "present" if source_reg_entry else "MISSING",
+            "present" if source_state else "MISSING",
+        )
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
         source_object_id = entity_id.split(".", 1)[1]
         for sensor_type in sensor_types:
@@ -124,7 +144,19 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
             # _attr_name in RealLastSensor). HA otherwise reuses the stale row
             # by unique_id match and ignores our suggested id.
             existing = ent_reg.async_get_entity_id("sensor", DOMAIN, unique_id)
+            _LOGGER.info(
+                "  %s: unique_id=%s desired=%s existing=%s",
+                sensor_type,
+                unique_id,
+                desired_entity_id,
+                existing,
+            )
             if existing and existing != desired_entity_id:
+                _LOGGER.info(
+                    "  wiping stale row %s (desired %s)",
+                    existing,
+                    desired_entity_id,
+                )
                 ent_reg.async_remove(existing)
 
             sensors.append(
