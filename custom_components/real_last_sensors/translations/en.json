@@ -19,13 +19,20 @@
             },
             "pattern": {
                 "title": "Pattern Matching",
-                "description": "Type a pattern and Submit to add matching entities to the list below. Repeat with more patterns to keep adding; untick anything you don't want. When you're done, leave the pattern empty and Submit to create the sensors.\n\nMatched so far: {count} \u00b7 selected: {selected}",
+                "description": "Type a pattern and Submit to preview matching entities, then confirm which ones to add. Submit again with a new pattern to add more. When done, leave the pattern empty and Submit to create sensors.\n\nSelected so far: {count}",
                 "data": {
                     "pattern": "Pattern (matches entity ID, leave empty to submit selection)",
                     "regex": "Use regex",
                     "sensor_types": "Sensor type(s) to create",
-                    "source_entities": "Matched entities",
-                    "clear_selection": "Clear all matched entities"
+                    "source_entities": "Selected entities",
+                    "clear_selection": "Clear all selected entities"
+                }
+            },
+            "preview": {
+                "title": "Preview Matches",
+                "description": "Pattern \"{pattern}\" matched {count} new entity/entities. Untick any you don't want, then Submit to add them to your selection.",
+                "data": {
+                    "to_add": "Entities to add"
                 }
             }
         },
@@ -36,8 +43,9 @@
             "bulk_created": "Created {created} new entry/entries. Added {added} to existing devices."
         },
         "error": {
-            "no_matches": "No matches found for that pattern.",
-            "no_selection": "Tick at least one entity, or enter a pattern to search.",
+            "no_matches": "No entities match that pattern.",
+            "all_already_selected": "All entities matching that pattern are already selected.",
+            "no_selection": "Enter a pattern to search, or keep at least one selected entity.",
             "bad_regex": "Invalid regex pattern."
         }
     },

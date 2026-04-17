@@ -42,9 +42,10 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
     def __init__(self):
-        self._matched: list[str] = []
-        self._selected: list[str] = []
+        self._accumulated: list[str] = []
         self._sensor_types: list[str] = list(DEFAULT_SENSOR_TYPES)
+        self._pending_matches: list[str] = []
+        self._pending_pattern: str = ""
 
     @staticmethod
     def async_get_options_flow(config_entry):
@@ -72,50 +73,50 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_pattern(self, user_input=None):
-        """Iterative pattern search.
+        """Review step: show accumulated selection and accept a new pattern.
 
-        One step that the user re-submits as many times as needed:
-          * type a pattern and submit to search (matches are added, auto-ticked)
-          * untick anything unwanted
-          * type another pattern and submit to add more matches
-          * leave pattern empty and submit to create sensors
-          * tick "Clear all matched" to wipe the accumulated list
+        Typing a pattern and submitting goes to the preview step, which
+        confirms matches before they are added here. Leaving the pattern
+        empty and submitting creates sensors from whatever is selected.
         """
         errors: dict[str, str] = {}
 
         if user_input is not None:
             pattern = user_input.get("pattern", "").strip()
             use_regex = user_input.get("regex", False)
-            selected_now = list(user_input.get(CONF_SOURCE_ENTITIES, []) or [])
             self._sensor_types = user_input.get(
                 CONF_SENSOR_TYPES, DEFAULT_SENSOR_TYPES
             )
 
+            # Respect user unticks from the accumulated list selector.
+            if CONF_SOURCE_ENTITIES in user_input:
+                self._accumulated = list(user_input[CONF_SOURCE_ENTITIES] or [])
+
             if user_input.get("clear_selection"):
-                self._matched = []
-                self._selected = []
-            elif pattern:
+                self._accumulated = []
+
+            if pattern:
                 try:
-                    new_matches = self._match_entities(pattern, use_regex)
+                    matches = self._match_entities(pattern, use_regex)
                 except re.error:
                     errors["base"] = "bad_regex"
-                    new_matches = []
-
-                added = [e for e in new_matches if e not in self._matched]
-                self._matched.extend(added)
-                self._selected = list(dict.fromkeys(selected_now + added))
-
-                if not new_matches and "base" not in errors:
+                    matches = []
+                new_matches = [e for e in matches if e not in self._accumulated]
+                if not matches and "base" not in errors:
                     errors["base"] = "no_matches"
-            else:
-                if not selected_now:
+                elif not new_matches and "base" not in errors:
+                    errors["base"] = "all_already_selected"
+                else:
+                    self._pending_pattern = pattern
+                    self._pending_matches = new_matches
+                    return await self.async_step_preview()
+            elif not user_input.get("clear_selection"):
+                if not self._accumulated:
                     errors["base"] = "no_selection"
                 else:
                     return await self._create_bulk(
-                        selected_now, self._sensor_types
+                        self._accumulated, self._sensor_types
                     )
-                # Preserve user unticks even on error re-render.
-                self._selected = selected_now
 
         schema_dict: dict = {
             vol.Optional("pattern", default=""): str,
@@ -125,19 +126,15 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 default=self._sensor_types or list(DEFAULT_SENSOR_TYPES),
             ): SENSOR_TYPE_SELECTOR,
         }
-        if self._matched:
+        if self._accumulated:
             schema_dict[
                 vol.Optional(
-                    CONF_SOURCE_ENTITIES, default=list(self._selected)
+                    CONF_SOURCE_ENTITIES, default=list(self._accumulated)
                 )
-            ] = selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[
-                        selector.SelectOptionDict(value=e, label=e)
-                        for e in self._matched
-                    ],
+            ] = selector.EntitySelector(
+                selector.EntitySelectorConfig(
                     multiple=True,
-                    mode=selector.SelectSelectorMode.LIST,
+                    include_entities=list(self._accumulated),
                 )
             )
             schema_dict[
@@ -148,9 +145,35 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="pattern",
             data_schema=vol.Schema(schema_dict),
             errors=errors,
+            description_placeholders={"count": str(len(self._accumulated))},
+        )
+
+    async def async_step_preview(self, user_input=None):
+        """Confirm pattern matches before adding them to the accumulated list."""
+        if user_input is not None:
+            to_add = list(user_input.get("to_add", []) or [])
+            for e in to_add:
+                if e not in self._accumulated:
+                    self._accumulated.append(e)
+            self._pending_matches = []
+            self._pending_pattern = ""
+            return await self.async_step_pattern()
+
+        return self.async_show_form(
+            step_id="preview",
+            data_schema=vol.Schema({
+                vol.Optional(
+                    "to_add", default=list(self._pending_matches)
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        multiple=True,
+                        include_entities=list(self._pending_matches),
+                    )
+                ),
+            }),
             description_placeholders={
-                "count": str(len(self._matched)),
-                "selected": str(len(self._selected)),
+                "pattern": self._pending_pattern,
+                "count": str(len(self._pending_matches)),
             },
         )
 
