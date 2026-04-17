@@ -9,7 +9,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.util import dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
 from .const import (
     DOMAIN,
@@ -71,9 +71,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     device_id = entry.data.get(CONF_DEVICE_ID)
 
     source_device_info = None
+    source_device_name = None
     if device_id:
         dev_reg = dr.async_get(hass)
         if device := dev_reg.async_get(device_id):
+            source_device_name = device.name_by_user or device.name
             if device.identifiers:
                 source_device_info = dr.DeviceInfo(identifiers=device.identifiers)
 
@@ -98,10 +100,15 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
             expected_name = f"{source_name} {type_label}"
             uid = f"{entity_id.replace('.', '_')}_{type_suffix}"
 
+            if has_custom_name or not source_device_name:
+                expected_slug = slugify(expected_name)
+            else:
+                expected_slug = slugify(f"{source_device_name} {expected_name}")
+
             existing_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
             if existing_id:
-                existing = ent_reg.async_get(existing_id)
-                if existing and existing.original_name != expected_name:
+                current_slug = existing_id.split(".", 1)[1]
+                if current_slug != expected_slug:
                     ent_reg.async_remove(existing_id)
 
             sensors.append(
