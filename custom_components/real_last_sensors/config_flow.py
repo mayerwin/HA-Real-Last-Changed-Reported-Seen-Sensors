@@ -170,14 +170,25 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="cannot_track_self")
 
         existing = self._existing_types_for_entity(entity_id)
-        remaining = [t for t in sensor_types if t not in existing]
-        if not remaining:
-            return self.async_abort(reason="already_configured")
+
+        if name:
+            # A custom name means the user wants one consolidated entry under
+            # that name. Take over from any prior entries tracking this source
+            # so the new entry owns all sensor types with the new name.
+            if existing:
+                await self._take_over_entity(entity_id)
+            effective_types = sensor_types
+        else:
+            effective_types = [t for t in sensor_types if t not in existing]
+            if not effective_types:
+                return self.async_abort(reason="already_configured")
 
         entry = er.async_get(self.hass).async_get(entity_id)
         device_id = entry.device_id if entry else None
 
-        if device_id and (existing_entry := self._get_device_entry(device_id, remaining)):
+        if not name and device_id and (
+            existing_entry := self._get_device_entry(device_id, effective_types)
+        ):
             await self._update_entry(existing_entry, [entity_id])
             return self.async_abort(
                 reason="added_to_device",
@@ -191,16 +202,42 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data = {
             CONF_SOURCE_ENTITIES: [entity_id],
             CONF_DEVICE_ID: device_id,
-            CONF_SENSOR_TYPES: remaining,
+            CONF_SENSOR_TYPES: effective_types,
         }
         if name:
             data[CONF_NAME] = name
 
-        types_label = " + ".join(SENSOR_TYPE_LABELS[t] for t in remaining)
+        types_label = " + ".join(SENSOR_TYPE_LABELS[t] for t in effective_types)
         return self.async_create_entry(
             title=name or f"{self._get_device_name(device_id) or entity_id} ({types_label})",
             data=data,
         )
+
+    async def _take_over_entity(self, entity_id: str) -> None:
+        """Remove entity_id (and its sensors) from any existing entries."""
+        ent_reg = er.async_get(self.hass)
+        prefix = f"{entity_id.replace('.', '_')}_"
+        for entry in list(self.hass.config_entries.async_entries(DOMAIN)):
+            tracked = self._get_entities_from_entry(entry)
+            if entity_id not in tracked:
+                continue
+
+            for reg in list(ent_reg.entities.values()):
+                if (
+                    reg.config_entry_id == entry.entry_id
+                    and reg.unique_id.startswith(prefix)
+                ):
+                    ent_reg.async_remove(reg.entity_id)
+
+            remaining = [e for e in tracked if e != entity_id]
+            if remaining:
+                new_data = dict(entry.data)
+                new_data[CONF_SOURCE_ENTITIES] = remaining
+                new_data.pop(CONF_SOURCE_ENTITY, None)
+                self.hass.config_entries.async_update_entry(entry, data=new_data)
+                await self.hass.config_entries.async_reload(entry.entry_id)
+            else:
+                await self.hass.config_entries.async_remove(entry.entry_id)
 
     async def _update_entry(self, entry, new_entities: list[str]):
         new_data = dict(entry.data)
