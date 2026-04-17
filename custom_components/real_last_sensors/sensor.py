@@ -13,7 +13,6 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util, slugify
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
 from .const import (
-    DOMAIN,
     CONF_SOURCE_ENTITY,
     CONF_SOURCE_ENTITIES,
     CONF_DEVICE_ID,
@@ -41,11 +40,10 @@ TYPE_ICONS = {
 def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
     """Derive the source entity's own name from its entity_id slug.
 
-    Deliberately ignores the source's friendly-name override. The entity_id
-    is the user's latest explicit choice; carrying an old upstream name
-    override across would make our sensor say "Pluviometer Last Seen" even
-    after the source was renamed to yearly_rainfall. Users who want a
-    different label should use this integration's custom name option.
+    Deliberately ignores the source's friendly-name override: the entity_id
+    is the user's latest explicit choice, while the override may still hold a
+    stale name from before a rename. Users who want a different label should
+    use this integration's custom name option.
     """
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
@@ -72,11 +70,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if device_id:
         dev_reg = dr.async_get(hass)
         if device := dev_reg.async_get(device_id):
-            # Always merge with the source device. Identifiers + connections are
-            # what HA uses to match to an existing device — passing both ensures
-            # our entities attach to the source device rather than spawning a
-            # new virtual device, regardless of whether the upstream integration
-            # uses identifiers, connections, or both.
+            # Pass both identifiers and connections so HA merges with the
+            # source device regardless of which one upstream registered with.
             if device.identifiers or device.connections:
                 source_device_info = dr.DeviceInfo(
                     identifiers=device.identifiers,
@@ -95,64 +90,26 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     has_custom_name = bool(single_custom_name)
 
     ent_reg = er.async_get(hass)
-    _LOGGER.warning(
-        "sensor.async_setup_entry: entry=%s sources=%s types=%s has_custom_name=%s device_info=%s",
-        entry.entry_id,
-        entities,
-        sensor_types,
-        has_custom_name,
-        source_device_info,
-    )
 
-    live_entities = []
+    sensors = []
     for entity_id in entities:
         if ent_reg.async_get(entity_id) is None:
-            _LOGGER.warning(
-                "  skipping %s: not in entity registry (renamed or removed upstream); "
-                "update this integration entry to point at the new entity",
+            _LOGGER.debug(
+                "Skipping %s: not in entity registry (renamed or removed upstream)",
                 entity_id,
             )
             continue
-        live_entities.append(entity_id)
 
-    sensors = []
-    for entity_id in live_entities:
-        source_reg_entry = ent_reg.async_get(entity_id)
-        source_state = hass.states.get(entity_id)
-        _LOGGER.warning(
-            "  source %s: registry=%s state=%s",
-            entity_id,
-            "present" if source_reg_entry else "MISSING",
-            "present" if source_state else "MISSING",
-        )
         source_name = single_custom_name or _source_entity_name(hass, entity_id)
         source_object_id = entity_id.split(".", 1)[1]
         for sensor_type in sensor_types:
             type_suffix = TYPE_SUFFIXES[sensor_type]
             type_label = TYPE_LABELS[sensor_type]
 
-            unique_id = f"{entity_id.replace('.', '_')}_{type_suffix}"
             if has_custom_name:
                 desired_object_id = slugify(f"{source_name} {type_label}")
             else:
                 desired_object_id = f"{source_object_id}_{type_suffix}"
-            desired_entity_id = f"sensor.{desired_object_id}"
-
-            existing = ent_reg.async_get_entity_id("sensor", DOMAIN, unique_id)
-            _LOGGER.warning(
-                "  %s: unique_id=%s desired=%s existing=%s",
-                sensor_type,
-                unique_id,
-                desired_entity_id,
-                existing,
-            )
-            if existing and existing != desired_entity_id:
-                _LOGGER.warning(
-                    "  wiping stale row %s (desired %s)",
-                    existing,
-                    desired_entity_id,
-                )
-                ent_reg.async_remove(existing)
 
             sensors.append(
                 RealLastSensor(
@@ -197,10 +154,10 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         self._attr_unique_id = f"{source_entity.replace('.', '_')}_{type_suffix}"
         self._attr_icon = TYPE_ICONS[sensor_type]
 
-        # Pin entity_id explicitly so HA doesn't fall back to a slug that
-        # embeds stale device or source names.
+        # suggested_object_id only applies on first registration, so any
+        # later user rename via HA's UI is preserved.
         if desired_object_id:
-            self.entity_id = f"sensor.{desired_object_id}"
+            self._attr_suggested_object_id = desired_object_id
 
         self._attr_native_value = None
         self._previous_state = None
@@ -231,7 +188,6 @@ class RealLastSensor(RestoreEntity, SensorEntity):
 
         @callback
         def on_state_change(event):
-            old = event.data.get("old_state")
             new = event.data.get("new_state")
             if new is None or new.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
                 return

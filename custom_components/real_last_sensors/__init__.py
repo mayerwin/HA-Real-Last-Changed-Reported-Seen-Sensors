@@ -11,17 +11,9 @@ from .const import (
     CONF_EXCLUDE_FROM_RECORDER,
     CONF_SOURCE_ENTITY,
     CONF_SOURCE_ENTITIES,
-    CONF_SENSOR_TYPES,
-    SENSOR_TYPE_CHANGED,
-    SENSOR_TYPE_SEEN,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-TYPE_SUFFIXES = {
-    SENSOR_TYPE_CHANGED: "last_changed",
-    SENSOR_TYPE_SEEN: "last_seen",
-}
 
 PACKAGES_SUBDIR = "packages"
 RECORDER_PACKAGE_FILENAME = "real_last_sensors_{entry_id}.yaml"
@@ -37,16 +29,6 @@ recorder:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration."""
-    _LOGGER.warning(
-        "Setting up entry %s (title=%r, version=%s, data=%s)",
-        entry.entry_id,
-        entry.title,
-        entry.version,
-        dict(entry.data),
-    )
-
-    _cleanup_ghost_entities(hass)
-
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -71,9 +53,8 @@ def _register_source_rename_tracker(
 ) -> None:
     """Follow entity_id renames on the source entities and update the entry.
 
-    Without this, renaming the source in HA's UI leaves our entry.data
-    pointing at a now-nonexistent entity_id, which is how stale unique_ids
-    and entity_ids ended up surviving every cleanup pass.
+    Without this, renaming the source in HA's UI leaves entry.data pointing at
+    a now-nonexistent entity_id.
     """
     source_ids = _entry_sources(entry)
     if not source_ids:
@@ -108,7 +89,7 @@ def _register_source_rename_tracker(
             changed = True
 
         if changed:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "Entry %s: source renamed %s -> %s; updating and reloading",
                 entry.entry_id,
                 old_id,
@@ -130,83 +111,20 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate old config entries.
 
     v1 -> v2: older releases generated entity_ids from upstream display names,
-    which could go stale after source renames. Wipe the registry entries once
-    so they get recreated with the new slug-based scheme; HA preserves future
-    user renames on its own.
+    which could go stale after source renames. Wipe the legacy registry rows
+    once so they get recreated with the slug-based scheme.
     """
     if entry.version > 2:
         return False
 
     if entry.version < 2:
         ent_reg = er.async_get(hass)
-        removed = 0
         for reg in list(ent_reg.entities.values()):
             if reg.platform == DOMAIN and reg.config_entry_id == entry.entry_id:
                 ent_reg.async_remove(reg.entity_id)
-                removed += 1
-        _LOGGER.info(
-            "Migrated entry %s to v2 (removed %d legacy entity registry rows)",
-            entry.entry_id,
-            removed,
-        )
         hass.config_entries.async_update_entry(entry, version=2)
 
     return True
-
-
-def _cleanup_ghost_entities(hass: HomeAssistant) -> None:
-    """Delete registry rows that no live config entry expects.
-
-    A row is considered a ghost if either:
-      * it has no config_entry_id (orphaned),
-      * its unique_id isn't among those currently expected by any config
-        entry, where the expected set is derived only from sources that
-        still exist in the entity registry. Sources that were renamed in
-        the upstream integration no longer exist, so any unique_id that
-        was derived from them is treated as stale and removed.
-    """
-    ent_reg = er.async_get(hass)
-    expected: set[str] = set()
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        types = entry.data.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
-        for src in _entry_sources(entry):
-            if ent_reg.async_get(src) is None:
-                _LOGGER.warning(
-                    "Entry %s: source %s is not in the entity registry "
-                    "(renamed or removed upstream). Its rows will be wiped.",
-                    entry.entry_id,
-                    src,
-                )
-                continue
-            for t in types:
-                expected.add(f"{src.replace('.', '_')}_{TYPE_SUFFIXES[t]}")
-
-    our_rows = [r for r in ent_reg.entities.values() if r.platform == DOMAIN]
-    _LOGGER.warning(
-        "Ghost cleanup: %d registry rows under %s; expected unique_ids=%s",
-        len(our_rows),
-        DOMAIN,
-        sorted(expected),
-    )
-    for reg in our_rows:
-        _LOGGER.warning(
-            "  row entity_id=%s unique_id=%s config_entry_id=%s name=%r original_name=%r",
-            reg.entity_id,
-            reg.unique_id,
-            reg.config_entry_id,
-            reg.name,
-            reg.original_name,
-        )
-
-    for reg in list(our_rows):
-        if reg.config_entry_id is None or reg.unique_id not in expected:
-            _LOGGER.warning(
-                "Removing ghost entity %s (unique_id=%s, config_entry_id=%s)",
-                reg.entity_id,
-                reg.unique_id,
-                reg.config_entry_id,
-            )
-            ent_reg.async_remove(reg.entity_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -216,12 +134,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Clean up registry entries and recorder package file when entry is deleted.
-
-    Wiping registry entries here prevents HA from retaining orphans
-    (config_entry_id=None) that could later be re-associated and resurface as
-    stale entity_ids.
-    """
+    """Clean up registry entries and recorder package file when entry is deleted."""
     ent_reg = er.async_get(hass)
     for reg in list(ent_reg.entities.values()):
         if reg.platform == DOMAIN and reg.config_entry_id == entry.entry_id:
