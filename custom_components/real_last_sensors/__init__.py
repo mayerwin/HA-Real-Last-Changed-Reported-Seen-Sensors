@@ -182,8 +182,16 @@ def _write_package_file(
     packages_dir = os.path.join(hass.config.config_dir, PACKAGES_SUBDIR)
     os.makedirs(packages_dir, exist_ok=True)
     file_path = os.path.join(
+        packages_dir, RECORDER_PACKAGE_FILENAME.format(entry_id=entry_id.lower())
+    )
+    # HA's cv.slug rejects uppercase; older versions of this integration wrote
+    # files using the original-case entry_id. Remove any such orphan so it
+    # stops failing package validation on every restart.
+    legacy_path = os.path.join(
         packages_dir, RECORDER_PACKAGE_FILENAME.format(entry_id=entry_id)
     )
+    if legacy_path != file_path and os.path.exists(legacy_path):
+        os.remove(legacy_path)
     entity_lines = "\n".join(f"      - {eid}" for eid in sorted(entity_ids))
     content = RECORDER_PACKAGE_TEMPLATE.format(entity_lines=entity_lines)
     with open(file_path, "w", encoding="utf-8") as f:
@@ -193,14 +201,17 @@ def _write_package_file(
 
 def _delete_package_file(hass: HomeAssistant, entry_id: str) -> None:
     """Delete the recorder exclusion YAML package file (blocking I/O)."""
+    packages_dir = os.path.join(hass.config.config_dir, PACKAGES_SUBDIR)
     file_path = os.path.join(
-        hass.config.config_dir,
-        PACKAGES_SUBDIR,
-        RECORDER_PACKAGE_FILENAME.format(entry_id=entry_id),
+        packages_dir, RECORDER_PACKAGE_FILENAME.format(entry_id=entry_id.lower())
     )
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        _LOGGER.debug("Deleted recorder exclusion package: %s", file_path)
+    legacy_path = os.path.join(
+        packages_dir, RECORDER_PACKAGE_FILENAME.format(entry_id=entry_id)
+    )
+    for path in {file_path, legacy_path}:
+        if os.path.exists(path):
+            os.remove(path)
+            _LOGGER.debug("Deleted recorder exclusion package: %s", path)
 
 
 async def _purge_entity_history(hass: HomeAssistant, entity_ids: list[str]) -> None:
