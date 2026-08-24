@@ -57,7 +57,9 @@
                 "description": "Uncheck any tracked entity to stop tracking it (its sensors will be removed). Removing all entities deletes this entry.\n\nWhen **Exclude from recorder** is enabled, a YAML package file is written to `config/packages/` and existing history for these sensors is purged. Requires a Home Assistant restart to take effect — see the integration README for setup instructions.",
                 "data": {
                     "source_entities": "Tracked entities",
-                    "exclude_from_recorder": "Exclude from recorder (recommended)"
+                    "exclude_from_recorder": "Exclude from recorder (recommended)",
+                    "unavailable_debounce": "Last Unavailable: ignore outages shorter than",
+                    "startup_grace": "Last Unavailable: ignore outages starting within this long after a restart"
                 }
             }
         },

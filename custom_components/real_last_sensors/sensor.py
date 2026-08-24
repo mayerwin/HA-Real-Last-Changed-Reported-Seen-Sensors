@@ -22,19 +22,13 @@ from .const import (
     SENSOR_TYPE_CHANGED,
     SENSOR_TYPE_SEEN,
     SENSOR_TYPE_UNAVAILABLE,
+    CONF_UNAVAILABLE_DEBOUNCE,
+    CONF_STARTUP_GRACE,
+    DEFAULT_UNAVAILABLE_DEBOUNCE,
+    DEFAULT_STARTUP_GRACE,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# An entity that drops out for a moment is not an outage worth recording, and
-# neither is the unavailable window an integration passes through while it sets
-# up. Only commit a drop that is still standing after this delay.
-UNAVAILABLE_DEBOUNCE = timedelta(seconds=60)
-
-# Restarts push nearly every entity through unavailable until its integration
-# has loaded, which would otherwise stamp every sensor with the restart time.
-# Ignore drops entirely until HA has been running for this long.
-STARTUP_GRACE = timedelta(minutes=5)
 
 TYPE_LABELS = {
     SENSOR_TYPE_CHANGED: "Last Changed",
@@ -102,6 +96,14 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
         entities = [entry.data[CONF_SOURCE_ENTITY]]
 
     sensor_types = entry.data.get(CONF_SENSOR_TYPES, [SENSOR_TYPE_CHANGED])
+    debounce = timedelta(
+        seconds=entry.options.get(
+            CONF_UNAVAILABLE_DEBOUNCE, DEFAULT_UNAVAILABLE_DEBOUNCE
+        )
+    )
+    grace = timedelta(
+        seconds=entry.options.get(CONF_STARTUP_GRACE, DEFAULT_STARTUP_GRACE)
+    )
     single_custom_name = custom_name if len(entities) == 1 else None
     has_custom_name = bool(single_custom_name)
 
@@ -135,6 +137,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                     source_device_info,
                     has_custom_name=has_custom_name,
                     desired_object_id=desired_object_id,
+                    debounce=debounce,
+                    grace=grace,
                 )
             )
     async_add_entities(sensors)
@@ -156,6 +160,8 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         device_info: dr.DeviceInfo | None = None,
         has_custom_name: bool = False,
         desired_object_id: str | None = None,
+        debounce: timedelta | None = None,
+        grace: timedelta | None = None,
     ):
         self._source = source_entity
         self._sensor_type = sensor_type
@@ -187,6 +193,14 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         self._cancel_debounce = None
         self._grace_until: datetime | None = None
         self._started_at: datetime | None = None
+        self._debounce = (
+            debounce
+            if debounce is not None
+            else timedelta(seconds=DEFAULT_UNAVAILABLE_DEBOUNCE)
+        )
+        self._grace = (
+            grace if grace is not None else timedelta(seconds=DEFAULT_STARTUP_GRACE)
+        )
 
     @property
     def extra_state_attributes(self):
@@ -278,8 +292,8 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         Two filters keep this from degenerating into a restart clock:
         a startup grace period, during which drops are ignored outright
         (integrations mark their entities unavailable until they have loaded),
-        and a debounce, so only a drop that is still standing after
-        UNAVAILABLE_DEBOUNCE is recorded. The timestamp committed is the moment
+        and a debounce, so only a drop that is still standing when it
+        elapses is recorded. The timestamp committed is the moment
         of the drop, not the moment the debounce elapsed.
         """
         @callback
@@ -297,21 +311,21 @@ class RealLastSensor(RestoreEntity, SensorEntity):
                 return
             if self._outage_ongoing or self._started_at is None:
                 return
-            if source.last_changed <= self._started_at + UNAVAILABLE_DEBOUNCE:
+            if source.last_changed <= self._started_at + self._debounce:
                 return
             self._attr_native_value = source.last_changed
             self._outage_ongoing = True
             self.async_write_ha_state()
 
         if self.hass.state is not CoreState.running:
-            self._grace_until = dt_util.utcnow() + STARTUP_GRACE
+            self._grace_until = dt_util.utcnow() + self._grace
 
             @callback
             def _on_started(_hass) -> None:
                 self._started_at = dt_util.utcnow()
-                self._grace_until = self._started_at + STARTUP_GRACE
+                self._grace_until = self._started_at + self._grace
                 self.async_on_remove(
-                    async_call_later(self.hass, STARTUP_GRACE, _end_of_grace)
+                    async_call_later(self.hass, self._grace, _end_of_grace)
                 )
 
             self.async_on_remove(async_at_started(self.hass, _on_started))
@@ -364,7 +378,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
                     return
                 self._pending_drop = new.last_changed
                 self._cancel_debounce = async_call_later(
-                    self.hass, UNAVAILABLE_DEBOUNCE, _commit_drop
+                    self.hass, self._debounce, _commit_drop
                 )
                 return
 

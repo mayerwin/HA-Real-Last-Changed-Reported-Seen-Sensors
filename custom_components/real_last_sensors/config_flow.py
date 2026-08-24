@@ -16,6 +16,10 @@ from .const import (
     SENSOR_TYPE_SEEN,
     SENSOR_TYPE_UNAVAILABLE,
     SENSOR_TYPES,
+    CONF_UNAVAILABLE_DEBOUNCE,
+    CONF_STARTUP_GRACE,
+    DEFAULT_UNAVAILABLE_DEBOUNCE,
+    DEFAULT_STARTUP_GRACE,
 )
 
 DEFAULT_SENSOR_TYPES = [SENSOR_TYPE_CHANGED, SENSOR_TYPE_SEEN]
@@ -25,6 +29,18 @@ SENSOR_TYPE_LABELS = {
     SENSOR_TYPE_SEEN: "Last Seen",
     SENSOR_TYPE_UNAVAILABLE: "Last Unavailable",
 }
+
+def _seconds_selector(maximum: int) -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0,
+            max=maximum,
+            step=1,
+            unit_of_measurement="seconds",
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
 
 SENSOR_TYPE_SELECTOR = selector.SelectSelector(
     selector.SelectSelectorConfig(
@@ -376,6 +392,17 @@ class RealLastSensorsOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         current_sources = self._get_current_sources()
         current_exclude = self._entry.options.get(CONF_EXCLUDE_FROM_RECORDER, True)
+        # The timing knobs only do anything for entries that create Last
+        # Unavailable sensors, so don't clutter the form otherwise.
+        tracks_unavailable = SENSOR_TYPE_UNAVAILABLE in self._entry.data.get(
+            CONF_SENSOR_TYPES, []
+        )
+        current_debounce = self._entry.options.get(
+            CONF_UNAVAILABLE_DEBOUNCE, DEFAULT_UNAVAILABLE_DEBOUNCE
+        )
+        current_grace = self._entry.options.get(
+            CONF_STARTUP_GRACE, DEFAULT_STARTUP_GRACE
+        )
 
         if user_input is not None:
             kept = user_input.get(CONF_SOURCE_ENTITIES, [])
@@ -395,28 +422,47 @@ class RealLastSensorsOptionsFlow(config_entries.OptionsFlow):
             new_data[CONF_SOURCE_ENTITIES] = kept
             new_data.pop(CONF_SOURCE_ENTITY, None)
 
+            new_options = dict(self._entry.options)
+            new_options[CONF_EXCLUDE_FROM_RECORDER] = exclude
+            if tracks_unavailable:
+                new_options[CONF_UNAVAILABLE_DEBOUNCE] = int(
+                    user_input.get(CONF_UNAVAILABLE_DEBOUNCE, current_debounce)
+                )
+                new_options[CONF_STARTUP_GRACE] = int(
+                    user_input.get(CONF_STARTUP_GRACE, current_grace)
+                )
+
             self.hass.config_entries.async_update_entry(
                 self._entry,
                 data=new_data,
-                options={CONF_EXCLUDE_FROM_RECORDER: exclude},
+                options=new_options,
             )
             return self.async_abort(reason="options_updated")
 
+        schema_dict: dict = {
+            vol.Required(
+                CONF_SOURCE_ENTITIES, default=current_sources
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    multiple=True,
+                    include_entities=current_sources,
+                )
+            ),
+            vol.Required(
+                CONF_EXCLUDE_FROM_RECORDER, default=current_exclude
+            ): selector.BooleanSelector(),
+        }
+        if tracks_unavailable:
+            schema_dict[
+                vol.Required(CONF_UNAVAILABLE_DEBOUNCE, default=current_debounce)
+            ] = _seconds_selector(3600)
+            schema_dict[
+                vol.Required(CONF_STARTUP_GRACE, default=current_grace)
+            ] = _seconds_selector(7200)
+
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_SOURCE_ENTITIES, default=current_sources
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        multiple=True,
-                        include_entities=current_sources,
-                    )
-                ),
-                vol.Required(
-                    CONF_EXCLUDE_FROM_RECORDER, default=current_exclude
-                ): selector.BooleanSelector(),
-            }),
+            data_schema=vol.Schema(schema_dict),
         )
 
     def _get_current_sources(self) -> list[str]:
