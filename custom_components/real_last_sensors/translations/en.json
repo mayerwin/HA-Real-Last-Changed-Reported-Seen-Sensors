@@ -10,7 +10,7 @@
             },
             "single": {
                 "title": "Add Single Sensor",
-                "description": "Track when an entity last changed state or was last seen.",
+                "description": "Track when an entity last changed state, was last seen, or last went unavailable.",
                 "data": {
                     "source_entity": "Entity to track",
                     "sensor_types": "Sensor type(s) to create",

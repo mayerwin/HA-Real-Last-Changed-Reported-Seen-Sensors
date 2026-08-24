@@ -15,6 +15,7 @@ Choose which sensor type(s) to create per entity — or select both:
 |---|---|---|
 | **Last Changed** | When the state *value* actually changed (ignoring unknown/unavailable) | "When did the temperature last change?" |
 | **Last Seen** | When the entity last *reported* any valid state, even if unchanged | "Is this sensor still alive?" |
+| **Last Unavailable** | When the entity last dropped to `unavailable` (restart noise and brief blips filtered out) | "When did this outage start?" |
 
 - Persists across Home Assistant restarts via `RestoreEntity`
 - Ignores unknown/unavailable transitions (e.g. during restarts)
@@ -72,6 +73,16 @@ Listens to `EVENT_STATE_CHANGED` and records the timestamp whenever the state va
 
 ### Last Seen
 Listens to both `EVENT_STATE_CHANGED` and `EVENT_STATE_REPORTED` — these are mutually exclusive events in Home Assistant's state machine. Together they catch every report from an entity, whether the value changed or not. Only valid states (not unknown/unavailable) are considered.
+
+### Last Unavailable
+Listens to `EVENT_STATE_CHANGED` and records when the entity dropped to `unavailable`. Two filters keep it from becoming a restart clock:
+
+- **Startup grace (5 min).** Integrations mark their entities `unavailable` until they have finished loading, so drops are ignored until Home Assistant has been running for five minutes. A device that was already offline before the restart keeps its restored timestamp, which is the correct one.
+- **Debounce (60 s).** A drop is only committed if the entity is *still* unavailable a minute later, so momentary dropouts are ignored. The timestamp recorded is the moment of the drop, not the moment the debounce elapsed.
+
+Additional attributes: `currently_unavailable`, `outage_ongoing`, `last_available` and `last_outage_duration_seconds` (of the last completed outage).
+
+> Not enabled by default — existing entries are untouched when you update, and the option is unticked for new ones.
 
 ## Credits
 

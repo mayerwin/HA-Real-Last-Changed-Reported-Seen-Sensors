@@ -1,14 +1,16 @@
 from __future__ import annotations
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_state_change_event,
     async_track_state_report_event,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util, slugify
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
@@ -19,21 +21,35 @@ from .const import (
     CONF_SENSOR_TYPES,
     SENSOR_TYPE_CHANGED,
     SENSOR_TYPE_SEEN,
+    SENSOR_TYPE_UNAVAILABLE,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+# An entity that drops out for a moment is not an outage worth recording, and
+# neither is the unavailable window an integration passes through while it sets
+# up. Only commit a drop that is still standing after this delay.
+UNAVAILABLE_DEBOUNCE = timedelta(seconds=60)
+
+# Restarts push nearly every entity through unavailable until its integration
+# has loaded, which would otherwise stamp every sensor with the restart time.
+# Ignore drops entirely until HA has been running for this long.
+STARTUP_GRACE = timedelta(minutes=5)
+
 TYPE_LABELS = {
     SENSOR_TYPE_CHANGED: "Last Changed",
     SENSOR_TYPE_SEEN: "Last Seen",
+    SENSOR_TYPE_UNAVAILABLE: "Last Unavailable",
 }
 TYPE_SUFFIXES = {
     SENSOR_TYPE_CHANGED: "last_changed",
     SENSOR_TYPE_SEEN: "last_seen",
+    SENSOR_TYPE_UNAVAILABLE: "last_unavailable",
 }
 TYPE_ICONS = {
     SENSOR_TYPE_CHANGED: "mdi:clock-check-outline",
     SENSOR_TYPE_SEEN: "mdi:eye-check-outline",
+    SENSOR_TYPE_UNAVAILABLE: "mdi:lan-disconnect",
 }
 
 
@@ -163,11 +179,30 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         self._previous_state = None
         self._unsubs: list = []
 
+        # Last Unavailable bookkeeping
+        self._last_available: datetime | None = None
+        self._outage_duration: float | None = None
+        self._outage_ongoing = False
+        self._pending_drop: datetime | None = None
+        self._cancel_debounce = None
+        self._grace_until: datetime | None = None
+        self._started_at: datetime | None = None
+
     @property
     def extra_state_attributes(self):
         attrs = {"source_entity": self._source, "sensor_type": self._sensor_type}
         if self._sensor_type == SENSOR_TYPE_CHANGED:
             attrs["previous_valid_state"] = self._previous_state
+        elif self._sensor_type == SENSOR_TYPE_UNAVAILABLE:
+            source = self.hass.states.get(self._source) if self.hass else None
+            attrs["currently_unavailable"] = (
+                source is not None and source.state == STATE_UNAVAILABLE
+            )
+            attrs["outage_ongoing"] = self._outage_ongoing
+            attrs["last_available"] = (
+                self._last_available.isoformat() if self._last_available else None
+            )
+            attrs["last_outage_duration_seconds"] = self._outage_duration
         return attrs
 
     async def async_added_to_hass(self):
@@ -177,9 +212,18 @@ class RealLastSensor(RestoreEntity, SensorEntity):
             self._attr_native_value = dt_util.parse_datetime(state.state)
             if self._sensor_type == SENSOR_TYPE_CHANGED:
                 self._previous_state = state.attributes.get("previous_valid_state")
+            elif self._sensor_type == SENSOR_TYPE_UNAVAILABLE:
+                self._outage_ongoing = bool(state.attributes.get("outage_ongoing"))
+                if raw := state.attributes.get("last_available"):
+                    self._last_available = dt_util.parse_datetime(raw)
+                self._outage_duration = state.attributes.get(
+                    "last_outage_duration_seconds"
+                )
 
         if self._sensor_type == SENSOR_TYPE_CHANGED:
             self._setup_changed_tracking()
+        elif self._sensor_type == SENSOR_TYPE_UNAVAILABLE:
+            self._setup_unavailable_tracking()
         else:
             self._setup_seen_tracking()
 
@@ -228,6 +272,120 @@ class RealLastSensor(RestoreEntity, SensorEntity):
             async_track_state_report_event(self.hass, [self._source], on_state_report),
         ]
 
+    def _setup_unavailable_tracking(self):
+        """Track when the source last dropped to unavailable.
+
+        Two filters keep this from degenerating into a restart clock:
+        a startup grace period, during which drops are ignored outright
+        (integrations mark their entities unavailable until they have loaded),
+        and a debounce, so only a drop that is still standing after
+        UNAVAILABLE_DEBOUNCE is recorded. The timestamp committed is the moment
+        of the drop, not the moment the debounce elapsed.
+        """
+        @callback
+        def _end_of_grace(_now) -> None:
+            """Catch a real drop that happened while the grace period was open.
+
+            Only adopt it if the source went unavailable well after HA had
+            settled; a drop stamped at startup is indistinguishable from an
+            integration that never finished loading, and in that case the
+            restored timestamp is the better answer.
+            """
+            self._grace_until = None
+            source = self.hass.states.get(self._source)
+            if source is None or source.state != STATE_UNAVAILABLE:
+                return
+            if self._outage_ongoing or self._started_at is None:
+                return
+            if source.last_changed <= self._started_at + UNAVAILABLE_DEBOUNCE:
+                return
+            self._attr_native_value = source.last_changed
+            self._outage_ongoing = True
+            self.async_write_ha_state()
+
+        if self.hass.state is not CoreState.running:
+            self._grace_until = dt_util.utcnow() + STARTUP_GRACE
+
+            @callback
+            def _on_started(_hass) -> None:
+                self._started_at = dt_util.utcnow()
+                self._grace_until = self._started_at + STARTUP_GRACE
+                self.async_on_remove(
+                    async_call_later(self.hass, STARTUP_GRACE, _end_of_grace)
+                )
+
+            self.async_on_remove(async_at_started(self.hass, _on_started))
+        elif (
+            self._attr_native_value is None
+            and (source := self.hass.states.get(self._source)) is not None
+            and source.state == STATE_UNAVAILABLE
+        ):
+            # Entry added for an already-offline entity: HA has been up long
+            # enough that the source's own last_changed is trustworthy, so
+            # adopt it rather than starting blank.
+            self._attr_native_value = source.last_changed
+            self._outage_ongoing = True
+
+        @callback
+        def _commit_drop(_now) -> None:
+            self._cancel_debounce = None
+            source = self.hass.states.get(self._source)
+            if source is None or source.state != STATE_UNAVAILABLE:
+                self._pending_drop = None
+                return
+            self._attr_native_value = self._pending_drop
+            self._pending_drop = None
+            self._outage_ongoing = True
+            self.async_write_ha_state()
+
+        @callback
+        def _cancel_pending() -> None:
+            if self._cancel_debounce is not None:
+                self._cancel_debounce()
+                self._cancel_debounce = None
+            self._pending_drop = None
+
+        @callback
+        def on_state_change(event):
+            new = event.data.get("new_state")
+            if new is None:
+                # Source entity removed, not an outage.
+                _cancel_pending()
+                return
+
+            if new.state == STATE_UNAVAILABLE:
+                if self._outage_ongoing or self._cancel_debounce is not None:
+                    return
+                if self._grace_until and dt_util.utcnow() < self._grace_until:
+                    _LOGGER.debug(
+                        "Ignoring %s going unavailable during startup grace",
+                        self._source,
+                    )
+                    return
+                self._pending_drop = new.last_changed
+                self._cancel_debounce = async_call_later(
+                    self.hass, UNAVAILABLE_DEBOUNCE, _commit_drop
+                )
+                return
+
+            # Back to any non-unavailable state: a pending drop was a blip.
+            _cancel_pending()
+            if self._outage_ongoing:
+                self._outage_ongoing = False
+                self._last_available = new.last_changed
+                if self._attr_native_value is not None:
+                    self._outage_duration = round(
+                        (self._last_available - self._attr_native_value).total_seconds()
+                    )
+                self.async_write_ha_state()
+
+        self._unsubs = [
+            async_track_state_change_event(self.hass, [self._source], on_state_change),
+        ]
+
     async def async_will_remove_from_hass(self):
+        if self._cancel_debounce is not None:
+            self._cancel_debounce()
+            self._cancel_debounce = None
         for unsub in self._unsubs:
             unsub()
