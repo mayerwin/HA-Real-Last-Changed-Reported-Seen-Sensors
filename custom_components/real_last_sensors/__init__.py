@@ -3,11 +3,12 @@ import os
 import logging
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.event import async_track_entity_registry_updated_event
 from homeassistant.helpers.start import async_at_start
 from .const import (
     DOMAIN,
+    CONF_DEVICE_ID,
     CONF_EXCLUDE_FROM_RECORDER,
     CONF_SOURCE_ENTITY,
     CONF_SOURCE_ENTITIES,
@@ -29,6 +30,10 @@ recorder:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration."""
+    # Before the update listener exists, so the data fix-up doesn't reload.
+    _remove_duplicate_devices(hass, entry)
+    _refresh_stored_device_id(hass, entry)
+
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -46,6 +51,60 @@ def _entry_sources(entry: ConfigEntry) -> list[str]:
     if not sources and CONF_SOURCE_ENTITY in entry.data:
         sources = [entry.data[CONF_SOURCE_ENTITY]]
     return sources
+
+
+@callback
+def _remove_duplicate_devices(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove devices this entry owns; its sensors only link to source devices.
+
+    Releases up to 1.6.0 attached sensors by copying the source device's
+    identifiers into device_info. HA 2026.8 made devices single-owner and split
+    each shared device, leaving this entry with a duplicate of every source
+    device, holding the sensors. The sensors are detached first because
+    removing a device also removes its entities; setup then relinks them to
+    the real source device.
+    """
+    dev_reg = dr.async_get(hass)
+    # Before 2026.8 the shared source device itself is listed here, with no
+    # single owner: leave it alone, HA splits it on upgrade.
+    owned = {
+        device.id
+        for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
+        if getattr(device, "config_entry_id", None) == entry.entry_id
+    }
+    if not owned:
+        return
+
+    ent_reg = er.async_get(hass)
+    for reg in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        if reg.device_id in owned:
+            ent_reg.async_update_entity(reg.entity_id, device_id=None)
+    for device_id in owned:
+        _LOGGER.debug("Entry %s: removing duplicate device %s", entry.entry_id, device_id)
+        dev_reg.async_remove_device(device_id)
+
+
+@callback
+def _refresh_stored_device_id(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Point the stored device_id at the sources' current device.
+
+    The config flow groups new sources into the entry for the same device. The
+    stored id goes stale when HA reassigns device ids (the 2026.8 split gave
+    every split device a new id) or when a source moves to another device.
+    """
+    ent_reg = er.async_get(hass)
+    current = next(
+        (
+            reg.device_id
+            for eid in _entry_sources(entry)
+            if (reg := ent_reg.async_get(eid)) and reg.device_id
+        ),
+        None,
+    )
+    if current and current != entry.data.get(CONF_DEVICE_ID):
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_DEVICE_ID: current}
+        )
 
 
 def _register_source_rename_tracker(

@@ -20,7 +20,7 @@ Choose which sensor type(s) to create per entity, or select several:
 - Persists across Home Assistant restarts via `RestoreEntity`
 - Ignores unknown/unavailable transitions (e.g. during restarts)
 - Supports single entity tracking or bulk pattern matching (substring or regex)
-- Automatically groups sensors by device
+- Shows each sensor on its source entity's device page, in the **Diagnostic** section
 - Option to exclude sensors from the recorder (enabled by default)
 
 ## Installation
@@ -54,7 +54,7 @@ Choose which sensor type(s) to create per entity, or select several:
 ### Viewing and managing sensors
 
 All entries are visible at **Settings > Devices & Services > Real Last Sensors**. From there you can:
-- Click an entry to see all sensors grouped under their device
+- Click an entry to see its sensors (each one also appears on its source device's page, under **Diagnostic**)
 - Click **Configure** to change options (e.g. recorder exclusion)
 - Click the three-dot menu to **Delete** an entry and all its sensors
 

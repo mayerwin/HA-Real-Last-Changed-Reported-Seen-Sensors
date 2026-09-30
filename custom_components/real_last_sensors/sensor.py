@@ -9,6 +9,7 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_state_report_event,
 )
+from homeassistant.helpers.device import async_entity_id_to_device
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -17,7 +18,6 @@ from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE, CONF_NAME
 from .const import (
     CONF_SOURCE_ENTITY,
     CONF_SOURCE_ENTITIES,
-    CONF_DEVICE_ID,
     CONF_SENSOR_TYPES,
     SENSOR_TYPE_CHANGED,
     SENSOR_TYPE_SEEN,
@@ -74,20 +74,6 @@ def _source_entity_name(hass: HomeAssistant, entity_id: str) -> str:
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Set up sensors for a config entry."""
-    device_id = entry.data.get(CONF_DEVICE_ID)
-
-    source_device_info = None
-    if device_id:
-        dev_reg = dr.async_get(hass)
-        if device := dev_reg.async_get(device_id):
-            # Pass both identifiers and connections so HA merges with the
-            # source device regardless of which one upstream registered with.
-            if device.identifiers or device.connections:
-                source_device_info = dr.DeviceInfo(
-                    identifiers=device.identifiers,
-                    connections=device.connections,
-                )
-
     entities = []
     custom_name = entry.data.get(CONF_NAME)
     if CONF_SOURCE_ENTITIES in entry.data:
@@ -134,7 +120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
                     entity_id,
                     sensor_type,
                     source_name,
-                    source_device_info,
+                    async_entity_id_to_device(hass, entity_id),
                     has_custom_name=has_custom_name,
                     desired_object_id=desired_object_id,
                     debounce=debounce,
@@ -157,7 +143,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         source_entity: str,
         sensor_type: str,
         source_name: str,
-        device_info: dr.DeviceInfo | None = None,
+        device_entry: dr.DeviceEntry | None = None,
         has_custom_name: bool = False,
         desired_object_id: str | None = None,
         debounce: timedelta | None = None,
@@ -165,7 +151,10 @@ class RealLastSensor(RestoreEntity, SensorEntity):
     ):
         self._source = source_entity
         self._sensor_type = sensor_type
-        self._attr_device_info = device_info
+        # Link to the source's device without claiming it. Since HA 2026.8 a
+        # device belongs to a single config entry, so a device_info carrying
+        # the source's identifiers would fork a duplicate device instead.
+        self.device_entry = device_entry
         if has_custom_name:
             self._attr_has_entity_name = False
 
