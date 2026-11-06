@@ -178,6 +178,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         self._last_available: datetime | None = None
         self._outage_duration: float | None = None
         self._outage_ongoing = False
+        self._outage_since_startup = False
         self._pending_drop: datetime | None = None
         self._cancel_debounce = None
         self._grace_until: datetime | None = None
@@ -202,6 +203,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
                 source is not None and source.state == STATE_UNAVAILABLE
             )
             attrs["outage_ongoing"] = self._outage_ongoing
+            attrs["outage_since_startup"] = self._outage_since_startup
             attrs["last_available"] = (
                 self._last_available.isoformat() if self._last_available else None
             )
@@ -217,6 +219,9 @@ class RealLastSensor(RestoreEntity, SensorEntity):
                 self._previous_state = state.attributes.get("previous_valid_state")
             elif self._sensor_type == SENSOR_TYPE_UNAVAILABLE:
                 self._outage_ongoing = bool(state.attributes.get("outage_ongoing"))
+                self._outage_since_startup = bool(
+                    state.attributes.get("outage_since_startup")
+                )
                 if raw := state.attributes.get("last_available"):
                     self._last_available = dt_util.parse_datetime(raw)
                 self._outage_duration = state.attributes.get(
@@ -287,12 +292,15 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         """
         @callback
         def _end_of_grace(_now) -> None:
-            """Catch a real drop that happened while the grace period was open.
+            """Commit an outage that is still standing when the grace ends.
 
-            Only adopt it if the source went unavailable well after HA had
-            settled; a drop stamped at startup is indistinguishable from an
-            integration that never finished loading, and in that case the
-            restored timestamp is the better answer.
+            The grace period only exists to give integrations time to load.
+            A source that is still unavailable once it is over has either
+            dropped while the grace was open, or never came back after the
+            restart (an integration that failed to load); both are real
+            outages. An outage already ongoing before the restart keeps its
+            restored timestamp, so a device that stays offline across
+            restarts is not re-stamped each time.
             """
             self._grace_until = None
             source = self.hass.states.get(self._source)
@@ -300,8 +308,9 @@ class RealLastSensor(RestoreEntity, SensorEntity):
                 return
             if self._outage_ongoing or self._started_at is None:
                 return
-            if source.last_changed <= self._started_at + self._debounce:
-                return
+            self._outage_since_startup = (
+                source.last_changed <= self._started_at + self._debounce
+            )
             self._attr_native_value = source.last_changed
             self._outage_ongoing = True
             self.async_write_ha_state()
@@ -328,6 +337,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
             # adopt it rather than starting blank.
             self._attr_native_value = source.last_changed
             self._outage_ongoing = True
+            self._outage_since_startup = False
 
         @callback
         def _commit_drop(_now) -> None:
@@ -339,6 +349,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
             self._attr_native_value = self._pending_drop
             self._pending_drop = None
             self._outage_ongoing = True
+            self._outage_since_startup = False
             self.async_write_ha_state()
 
         @callback

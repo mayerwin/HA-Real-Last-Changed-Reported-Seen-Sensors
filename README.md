@@ -73,7 +73,7 @@ For entries that create **Last Unavailable** sensors, **Configure** also exposes
 | Option | Default | What it does |
 |---|---|---|
 | Ignore outages shorter than | 60 | Debounce. Raise it for a flaky device you don't want logging every dropout; set it to 0 to record every drop instantly. |
-| Ignore outages starting within this long after a restart | 300 | Startup grace. Raise it if your slowest integration takes more than five minutes to come up; set it to 0 if you would rather catch every drop and tolerate restart noise. |
+| Ignore outages starting within this long after a restart | 300 | Startup grace. Raise it if your slowest integration takes more than five minutes to come up; set it to 0 if you would rather catch every drop and tolerate restart noise. An entity still unavailable when the grace ends is recorded either way. |
 
 Changes apply as soon as you save, without a restart. These options do not appear on entries that only create Last Changed or Last Seen sensors.
 
@@ -88,12 +88,14 @@ Listens to both `EVENT_STATE_CHANGED` and `EVENT_STATE_REPORTED` — these are m
 ### Last Unavailable
 Listens to `EVENT_STATE_CHANGED` and records when the entity dropped to `unavailable`. Two filters keep it from becoming a restart clock:
 
-- **Startup grace (default 5 min).** Integrations mark their entities `unavailable` until they have finished loading, so drops are ignored until Home Assistant has been running for this long. A device that was already offline before the restart keeps its restored timestamp, which is the correct one.
+- **Startup grace (default 5 min).** Integrations mark their entities `unavailable` until they have finished loading, so drops are ignored until Home Assistant has been running for this long. If the entity is *still* unavailable when the grace ends (for example, an integration that failed to load at boot), that is recorded as an outage, timestamped from when the entity went unavailable, and `outage_since_startup` is set to `true`. A device that was already offline before the restart keeps its restored timestamp, so it is not re-stamped on every restart.
 - **Debounce (default 60 s).** A drop is only committed if the entity is *still* unavailable once this elapses, so momentary dropouts are ignored. The timestamp recorded is the moment of the drop, not the moment the debounce elapsed.
 
 Both are adjustable per entry under **Configure** (see [Timing options](#timing-options)).
 
-Additional attributes: `currently_unavailable`, `outage_ongoing`, `last_available` and `last_outage_duration_seconds` (of the last completed outage).
+Additional attributes: `currently_unavailable`, `outage_ongoing`, `outage_since_startup` (`true` when the current or last outage began during startup, i.e. the entity never came back after the restart), `last_available` and `last_outage_duration_seconds` (of the last completed outage).
+
+For example, to reload an integration that sometimes fails to come back after a restart, trigger an automation on `outage_ongoing` turning `true` and call `homeassistant.reload_config_entry` on the source entity.
 
 > Not enabled by default. Existing entries are untouched when you update, and the option is unticked for new ones.
 
