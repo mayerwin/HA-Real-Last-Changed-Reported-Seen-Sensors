@@ -213,8 +213,14 @@ class RealLastSensorsFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return entry is not None and entry.platform == DOMAIN
 
     def _get_device_entry(self, device_id: str, sensor_types: list[str]):
+        ent_reg = er.async_get(self.hass)
         for entry in self.hass.config_entries.async_entries(DOMAIN):
-            if entry.data.get(CONF_DEVICE_ID) != device_id:
+            # The stored id is only refreshed when the entry loads, so also
+            # match on where the entry's sources live right now.
+            if entry.data.get(CONF_DEVICE_ID) != device_id and not any(
+                (reg := ent_reg.async_get(eid)) and reg.device_id == device_id
+                for eid in self._get_entities_from_entry(entry)
+            ):
                 continue
             if sorted(entry.data.get(CONF_SENSOR_TYPES, [])) == sorted(sensor_types):
                 return entry
