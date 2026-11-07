@@ -20,7 +20,7 @@ Choose which sensor type(s) to create per entity, or select several:
 - Persists across Home Assistant restarts via `RestoreEntity`
 - Ignores unknown/unavailable transitions (e.g. during restarts)
 - Supports single entity tracking or bulk pattern matching (substring or regex)
-- Shows each sensor on its source entity's device page, in the **Diagnostic** section
+- Shows each sensor on its source entity's device page, in the **Diagnostic** section, and follows the source if its device is recreated (e.g. after its integration fails to load)
 - Option to exclude sensors from the recorder (enabled by default)
 
 ## Installation

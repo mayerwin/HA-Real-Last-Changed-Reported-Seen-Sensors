@@ -6,6 +6,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_call_later,
+    async_track_entity_registry_updated_event,
     async_track_state_change_event,
     async_track_state_report_event,
 )
@@ -234,6 +235,47 @@ class RealLastSensor(RestoreEntity, SensorEntity):
             self._setup_unavailable_tracking()
         else:
             self._setup_seen_tracking()
+
+        self._sync_device_link()
+        self.async_on_remove(
+            async_track_entity_registry_updated_event(
+                self.hass, self._source, self._on_source_registry_updated
+            )
+        )
+
+    @callback
+    def _on_source_registry_updated(self, event) -> None:
+        data = event.data
+        if data["action"] == "create" or (
+            data["action"] == "update" and "device_id" in data["changes"]
+        ):
+            self._sync_device_link()
+
+    @callback
+    def _sync_device_link(self) -> None:
+        """Keep this sensor on the same device as its source entity.
+
+        The device link is only resolved once, at setup. If the source's
+        integration fails to load and its device is removed, HA detaches this
+        sensor from it, and nothing re-attaches it once the integration
+        recreates the device. Following the source's registry entry fixes
+        that without a reload.
+        """
+        ent_reg = er.async_get(self.hass)
+        source_entry = ent_reg.async_get(self._source)
+        own_entry = ent_reg.async_get(self.entity_id)
+        if source_entry is None or own_entry is None:
+            return
+        if own_entry.device_id == source_entry.device_id:
+            return
+        _LOGGER.debug(
+            "Relinking %s to the device of %s", self.entity_id, self._source
+        )
+        # The entity picks up the new device_entry from its own registry
+        # update event.
+        ent_reg.async_update_entity(
+            self.entity_id, device_id=source_entry.device_id
+        )
 
     def _setup_changed_tracking(self):
         """Track actual state value changes only."""
