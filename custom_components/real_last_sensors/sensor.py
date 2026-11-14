@@ -333,6 +333,34 @@ class RealLastSensor(RestoreEntity, SensorEntity):
         of the drop, not the moment the debounce elapsed.
         """
         @callback
+        def _close_outage(recovered_at: datetime) -> None:
+            self._outage_ongoing = False
+            self._outage_since_startup = False
+            self._last_available = recovered_at
+            if self._attr_native_value is not None:
+                self._outage_duration = round(
+                    (recovered_at - self._attr_native_value).total_seconds()
+                )
+
+        @callback
+        def _close_stale_outage() -> bool:
+            """Close a restored outage whose recovery this sensor never saw.
+
+            The source can come back while HA is down, or before this sensor
+            starts listening (its integration loaded first). Left alone, the
+            outage would stay "ongoing" and swallow the next real drop.
+            """
+            source = self.hass.states.get(self._source)
+            if (
+                not self._outage_ongoing
+                or source is None
+                or source.state == STATE_UNAVAILABLE
+            ):
+                return False
+            _close_outage(source.last_changed)
+            return True
+
+        @callback
         def _end_of_grace(_now) -> None:
             """Commit an outage that is still standing when the grace ends.
 
@@ -345,6 +373,9 @@ class RealLastSensor(RestoreEntity, SensorEntity):
             restarts is not re-stamped each time.
             """
             self._grace_until = None
+            if _close_stale_outage():
+                self.async_write_ha_state()
+                return
             source = self.hass.states.get(self._source)
             if source is None or source.state != STATE_UNAVAILABLE:
                 return
@@ -369,7 +400,7 @@ class RealLastSensor(RestoreEntity, SensorEntity):
                 )
 
             self.async_on_remove(async_at_started(self.hass, _on_started))
-        elif (
+        elif not _close_stale_outage() and (
             self._attr_native_value is None
             and (source := self.hass.states.get(self._source)) is not None
             and source.state == STATE_UNAVAILABLE
@@ -403,36 +434,38 @@ class RealLastSensor(RestoreEntity, SensorEntity):
 
         @callback
         def on_state_change(event):
+            old = event.data.get("old_state")
             new = event.data.get("new_state")
+            was_unavailable = old is not None and old.state == STATE_UNAVAILABLE
+            is_unavailable = new is not None and new.state == STATE_UNAVAILABLE
+
             if new is None:
                 # Source entity removed, not an outage.
                 _cancel_pending()
-                return
-
-            if new.state == STATE_UNAVAILABLE:
+            elif is_unavailable:
                 if self._outage_ongoing or self._cancel_debounce is not None:
-                    return
-                if self._grace_until and dt_util.utcnow() < self._grace_until:
+                    pass
+                elif self._grace_until and dt_util.utcnow() < self._grace_until:
                     _LOGGER.debug(
                         "Ignoring %s going unavailable during startup grace",
                         self._source,
                     )
-                    return
-                self._pending_drop = new.last_changed
-                self._cancel_debounce = async_call_later(
-                    self.hass, self._debounce, _commit_drop
-                )
-                return
-
-            # Back to any non-unavailable state: a pending drop was a blip.
-            _cancel_pending()
-            if self._outage_ongoing:
-                self._outage_ongoing = False
-                self._last_available = new.last_changed
-                if self._attr_native_value is not None:
-                    self._outage_duration = round(
-                        (self._last_available - self._attr_native_value).total_seconds()
+                else:
+                    self._pending_drop = new.last_changed
+                    self._cancel_debounce = async_call_later(
+                        self.hass, self._debounce, _commit_drop
                     )
+            else:
+                # Back to any non-unavailable state: a pending drop was a blip.
+                _cancel_pending()
+                if self._outage_ongoing:
+                    _close_outage(new.last_changed)
+                    self.async_write_ha_state()
+                    return
+
+            # currently_unavailable is computed on write, so write whenever
+            # the source flips, or it would lag until the next commit.
+            if was_unavailable != is_unavailable:
                 self.async_write_ha_state()
 
         self._unsubs = [

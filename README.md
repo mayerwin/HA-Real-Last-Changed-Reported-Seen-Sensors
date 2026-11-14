@@ -93,7 +93,15 @@ Listens to `EVENT_STATE_CHANGED` and records when the entity dropped to `unavail
 
 Both are adjustable per entry under **Configure** (see [Timing options](#timing-options)).
 
-Additional attributes: `currently_unavailable`, `outage_ongoing`, `outage_since_startup` (`true` when the current or last outage began during startup, i.e. the entity never came back after the restart), `last_available` and `last_outage_duration_seconds` (of the last completed outage).
+The sensor's state is when the last outage **started**. It does not change when the entity comes back; the recovery time is in `last_available`.
+
+| Attribute | Meaning |
+|---|---|
+| `currently_unavailable` | The source is `unavailable` right now. Live, so it is also `true` during the debounce and the startup grace, before an outage is recorded. |
+| `outage_ongoing` | An outage has been recorded and the source has not come back yet. Turns `true` once the debounce (or the startup grace) has passed, and `false` as soon as the source recovers. |
+| `outage_since_startup` | The ongoing outage began at startup: the entity never came back after the restart. Always `false` once the source recovers. |
+| `last_available` | When the source came back from the last completed outage. |
+| `last_outage_duration_seconds` | How long the last completed outage lasted. |
 
 For example, to reload an integration that sometimes fails to come back after a restart, trigger an automation on `outage_ongoing` turning `true` and call `homeassistant.reload_config_entry` on the source entity.
 
